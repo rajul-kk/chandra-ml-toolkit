@@ -1,0 +1,185 @@
+"""Domain-agnostic pool-based active learning.
+
+Works against any scikit-learn-style estimator (fit / predict / predict_proba)
+and a plain numpy feature pool - nothing here knows about Chandra, X-ray
+features, or class names. catalog_classification supplies the estimator,
+the feature matrix, and (for the reliability-aware experiment) an auxiliary
+per-example array; this module just runs the query loop.
+
+Query strategies are plain scoring functions, higher score = more worth
+labeling:
+
+    score_fn(estimator, X_labeled, y_labeled, X_pool, pool_indices, rng) -> np.ndarray
+
+`pool_indices` are the caller's original dataset indices for the rows
+currently in X_pool (the pool shrinks as rounds proceed, so this is how a
+strategy looks up per-example side information, e.g. reliability, keyed to
+the original dataset rather than the current pool position).
+
+`reliability_weighted()` wraps any base strategy with a per-example
+reliability array (any domain's, not just Chandra's) and a mixing exponent
+alpha - this is the method-layer contribution, not a Chandra-specific hack.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
+
+import numpy as np
+from sklearn.base import clone
+from sklearn.utils import check_random_state
+
+ScoreFn = Callable[..., np.ndarray]
+
+
+# ---------------------------------------------------------------------------
+# Query strategies
+# ---------------------------------------------------------------------------
+
+def uncertainty_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None, **kw):
+    """Least-confidence: 1 - P(predicted class)."""
+    proba = estimator.predict_proba(X_pool)
+    return 1.0 - proba.max(axis=1)
+
+
+def margin_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None, **kw):
+    """Smallest margin between the top two predicted-class probabilities."""
+    proba = np.sort(estimator.predict_proba(X_pool), axis=1)
+    return -(proba[:, -1] - proba[:, -2])
+
+
+def qbc_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None,
+              n_committee: int = 5, sample_frac: float = 0.8, **kw):
+    """Query-by-committee: vote entropy across bagged committee members."""
+    rng = check_random_state(rng)
+    n_labeled = len(X_labeled)
+    if n_labeled < 2:
+        return rng.random(X_pool.shape[0])
+    votes = np.empty((n_committee, X_pool.shape[0]), dtype=object)
+    for m in range(n_committee):
+        idx = rng.choice(n_labeled, size=max(2, int(n_labeled * sample_frac)), replace=True)
+        member = clone(estimator)
+        member.fit(X_labeled[idx], y_labeled[idx])
+        votes[m] = member.predict(X_pool)
+    scores = np.zeros(X_pool.shape[0])
+    classes = np.unique(votes)
+    for i in range(X_pool.shape[0]):
+        counts = np.array([(votes[:, i] == c).sum() for c in classes])
+        p = counts[counts > 0] / n_committee
+        scores[i] = -(p * np.log(p)).sum()
+    return scores
+
+
+def random_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None, **kw):
+    """Control strategy: every example equally worth labeling."""
+    rng = check_random_state(rng)
+    return rng.random(X_pool.shape[0])
+
+
+def reliability_weighted(base_score_fn: ScoreFn, reliability: np.ndarray, alpha: float = 1.0) -> ScoreFn:
+    """Wrap a strategy so its score is discounted for examples whose label
+    is expected to be less trustworthy.
+
+    `reliability` is indexed by the caller's original dataset indices (same
+    space as `pool_indices`), values expected roughly in [0, 1]. alpha=0
+    recovers the base strategy exactly; alpha=1 multiplies informativeness
+    by reliability; alpha>1 penalizes low-reliability examples harder.
+    """
+    def score_fn(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None, **kw):
+        raw = base_score_fn(estimator, X_labeled, y_labeled, X_pool,
+                             pool_indices=pool_indices, rng=rng, **kw)
+        if pool_indices is None:
+            raise ValueError("reliability_weighted requires pool_indices to look up reliability")
+        rel = np.asarray(reliability)[pool_indices]
+        return raw * (rel ** alpha)
+    return score_fn
+
+
+# ---------------------------------------------------------------------------
+# Active learning loop
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LearningHistory:
+    strategy_name: str
+    n_labels: List[int] = field(default_factory=list)
+    metrics: List[dict] = field(default_factory=list)
+    queried_indices: List[np.ndarray] = field(default_factory=list)
+
+
+class ActiveLearner:
+    """Pool-based active learning loop.
+
+    Parameters
+    ----------
+    estimator : sklearn-style estimator (must support fit, predict_proba)
+    X : full feature matrix (labeled seed rows + unlabeled pool rows)
+    label_fn : callable(indices) -> labels ; the oracle. In this project it
+        reads a held-out ground-truth array, but the signature is what a
+        human-in-the-loop labeling callback would look like too.
+    score_fn : one of the strategies above, or a custom callable
+    init_indices : indices into X that start out labeled
+    eval_fn : optional callable(fitted_estimator) -> dict of metrics,
+        called once per round for the label-efficiency curve
+    """
+
+    def __init__(self, estimator, X: np.ndarray, label_fn: Callable[[np.ndarray], np.ndarray],
+                 score_fn: ScoreFn, init_indices: np.ndarray, batch_size: int = 20,
+                 eval_fn: Optional[Callable[[object], dict]] = None,
+                 strategy_name: str = "custom", random_state=None):
+        self.estimator = estimator
+        self.X = np.asarray(X)
+        self.label_fn = label_fn
+        self.score_fn = score_fn
+        self.batch_size = batch_size
+        self.eval_fn = eval_fn
+        self.strategy_name = strategy_name
+        self.rng = check_random_state(random_state)
+
+        self.labeled_idx = np.array(sorted(set(init_indices)), dtype=int)
+        all_idx = np.arange(len(self.X))
+        self.pool_idx = np.setdiff1d(all_idx, self.labeled_idx)
+        self.y_labeled = np.asarray(label_fn(self.labeled_idx))
+
+    def _fit_current(self):
+        model = clone(self.estimator)
+        model.fit(self.X[self.labeled_idx], self.y_labeled)
+        return model
+
+    def step(self, model) -> np.ndarray:
+        """Score the current pool, pick a batch, label it, fold it into the
+        labeled set. Returns the original-index array that was queried.
+        """
+        if len(self.pool_idx) == 0:
+            return np.array([], dtype=int)
+        X_pool = self.X[self.pool_idx]
+        scores = self.score_fn(model, self.X[self.labeled_idx], self.y_labeled, X_pool,
+                                pool_indices=self.pool_idx, rng=self.rng)
+        n = min(self.batch_size, len(self.pool_idx))
+        pick_pos = np.argpartition(-scores, n - 1)[:n]
+        queried = self.pool_idx[pick_pos]
+
+        new_labels = np.asarray(self.label_fn(queried))
+        self.labeled_idx = np.concatenate([self.labeled_idx, queried])
+        self.y_labeled = np.concatenate([self.y_labeled, new_labels])
+        self.pool_idx = np.setdiff1d(self.pool_idx, queried)
+        return queried
+
+    def run(self, n_rounds: int) -> LearningHistory:
+        history = LearningHistory(strategy_name=self.strategy_name)
+        model = self._fit_current()
+        if self.eval_fn is not None:
+            history.n_labels.append(len(self.labeled_idx))
+            history.metrics.append(self.eval_fn(model))
+            history.queried_indices.append(self.labeled_idx.copy())
+
+        for _ in range(n_rounds):
+            queried = self.step(model)
+            if len(queried) == 0:
+                break
+            model = self._fit_current()
+            if self.eval_fn is not None:
+                history.n_labels.append(len(self.labeled_idx))
+                history.metrics.append(self.eval_fn(model))
+                history.queried_indices.append(queried.copy())
+        return history
