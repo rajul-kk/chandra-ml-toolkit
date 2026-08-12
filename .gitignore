@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# downloaded/cached data - reproducible via scripts/fetch_data.py
+data/raw/
+data/cache/
+*.fits
+
+# outputs
+results/
+*.png
+!docs/**/*.png
