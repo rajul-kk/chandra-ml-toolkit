@@ -18,7 +18,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from common.data_access import ChandraArchive
+
 RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
+
+XRAY_FEATURE_COLUMNS = [
+    "name", "significance", "flux_aper_b", "hard_hm", "hard_hs", "hard_ms",
+    "var_intra_index_b", "var_inter_index_b", "extent_flag", "conf_flag",
+]
 
 CLASS_MAP = {
     "AGN": "AGN",
@@ -60,3 +67,17 @@ def load_labeled_pool(td_path: Path = None, matches_path: Path = None) -> pd.Dat
     reliability = load_reliability(matches_path)
     pool = labels.merge(reliability, on="name", how="inner")
     return pool.reset_index(drop=True)
+
+
+def load_feature_pool(archive: ChandraArchive = None, td_path: Path = None,
+                       matches_path: Path = None) -> pd.DataFrame:
+    """Labeled pool (load_labeled_pool) joined with CSC 2.1 X-ray features
+    pulled live via the shared data_access layer. This is the full feature
+    matrix the classifier trains on: reliability columns + X-ray columns +
+    Gaia optical photometry, one row per source, `label` as the target.
+    """
+    archive = archive or ChandraArchive()
+    pool = load_labeled_pool(td_path, matches_path)
+    xray = archive.query_features_by_name(pool["name"].tolist(), columns=XRAY_FEATURE_COLUMNS)
+    merged = pool.merge(xray, on="name", how="inner")
+    return merged.reset_index(drop=True)
