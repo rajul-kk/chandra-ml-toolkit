@@ -37,7 +37,15 @@ RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 def make_estimator():
-    return LGBMClassifier(n_estimators=100, num_leaves=15, min_child_samples=5, verbosity=-1)
+    # class_weight='balanced' matters a lot once the labeled set becomes
+    # imbalanced (which it does under any strategy, including AL, since
+    # the pool itself is 97% AGN/STAR) - checked directly: at a realistic
+    # n=830 imbalanced labeled set, this alone lifts COMPACT_OBJECT F1
+    # from 0.11 to 0.27 and macro-F1 from 0.63 to 0.69, without hurting
+    # AGN/STAR. It's a no-op on the perfectly-balanced stratified init
+    # seed, which is why the earlier per-class diagnosis didn't catch it.
+    return LGBMClassifier(n_estimators=100, num_leaves=15, min_child_samples=5,
+                           verbosity=-1, class_weight="balanced")
 
 
 def make_eval_fn(estimator_factory, X_test, y_test):

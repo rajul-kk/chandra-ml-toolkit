@@ -162,21 +162,70 @@ estimates are calibrated for the rare class before they're used to score
 anything, or a much larger rare-class seed set than 10 - not a smarter
 query strategy layered on top of an under-informed classifier.
 
+**Tested the upstream fix directly: class-weighted training.** The
+diagnosis above pointed at a specific, testable claim - the classifier's
+own rare-class probabilities are the bottleneck, not the acquisition
+function. Checked it: with a perfectly class-balanced 30-example
+stratified seed (10/class), `class_weight="balanced"` changes nothing
+(the training set is already balanced, so the reweighting is a no-op).
+But at a realistic, imbalanced labeled set (e.g. 830 labels drawn the
+way random sampling actually accumulates them: 391 AGN / 413 STAR / 26
+COMPACT_OBJECT), it matters a great deal: mean P(COMPACT_OBJECT | true
+compact object) rises from 0.097 to 0.171, and COMPACT_OBJECT test F1
+rises from 0.11 to 0.27 in that single check - without hurting AGN or
+STAR.
+
+Reran the full 15-seed, 5-strategy sweep with `class_weight="balanced"`
+wired into every strategy's estimator (`common/active_learning.py`'s
+`make_estimator`) to see whether a properly calibrated classifier
+finally lets acquisition strategies exploit an advantage on the rare
+class. It confirmed the training-side effect at scale - random's own
+COMPACT_OBJECT plateau F1 rose from 0.136 to 0.193 (a ~42% relative
+gain), AGN/STAR plateaus were unchanged within noise - **but it did not
+revive AL's edge.** If anything the picture got slightly worse for AL:
+
+| metric | unweighted | class-weighted |
+|---|---|---|
+| aggregate macro-F1 plateau, best AL strategy vs. random | p=0.19 (uncertainty) | p=0.16 (class_balanced) |
+| COMPACT_OBJECT F1, best AL strategy vs. random | p=0.29 (uncertainty, trending better) | p=0.66 (class_balanced, ~tied) |
+| COMPACT_OBJECT F1, worst AL strategy vs. random | p=0.65 (reliability_weighted) | **p=0.032 (reliability_weighted, significantly worse)** |
+| class_balanced's COMPACT_OBJECT query count (of 800) | 33 (fewer than plain uncertainty's 39) | 37 (roughly matches uncertainty's 36) |
+| reliability-acquisition correlation | r=-0.03 (p=0.19) | r=-0.02 (p=0.34), unchanged |
+
+Class-weighted training modestly improved class-balanced acquisition's
+ability to actually target the rare class (33->37 of 800 queries), as
+the calibration-noise explanation predicted - but that improvement was
+too small to show up as a significant F1 gain, and `reliability_weighted`
+went from "no different than random" to "significantly worse than
+random" on the class it was built to help. With a well-calibrated
+classifier, random sampling turned out to be a perfectly competitive
+- and in one comparison, superior - strategy for the rare class. A
+plausible read: uncertainty-style acquisition tends toward the *most
+ambiguous* examples of a class, which may be its least representative
+members, while random sampling of a well-weighted classifier gets a
+more prototypical cross-section - worth testing directly in a future
+iteration, not confirmed here.
+
 **Bottom line:** active learning delivers a real, reproducible,
-statistically significant benefit on this pool's majority classes, no
-benefit on its minority class, and the reason is diagnosable rather than
-mysterious - a cold-start problem in the classifier's own probability
-estimates that no acquisition-layer fix can route around. This is well
-below the ~15-20% kill-condition threshold as an aggregate label-saving
-result, but it's a complete, actionable, mechanistically-explained
-finding rather than an unexplained null, and the shared `common/`
-infrastructure it was built on (including the now-tested
-`class_balanced_uncertainty_score` strategy) is unaffected - it is
-exactly what the later two modules will reuse.
+statistically significant benefit on this pool's majority classes,
+no benefit - and possibly mild harm from one strategy - on its minority
+class, and this holds up under a controlled comparison once the
+classifier-calibration confound is fixed. Class-weighted training is a
+genuine, substantial improvement (raises the ceiling ~42% on the class
+that matters most), but it's a training-side lever that helps every
+acquisition strategy equally, including random - it does not create
+headroom for AL specifically to exploit. This is well below the
+~15-20% kill-condition threshold as an aggregate label-saving result,
+but it's a complete, controlled, mechanistically-explained finding
+rather than an unexplained null, and the shared `common/` infrastructure
+it was built on (including the now-tested `class_balanced_uncertainty_score`
+strategy) is unaffected - it is exactly what the later two modules will
+reuse.
 
 Raw per-round results: `results/label_efficiency_log.csv`.
 Reproduce: `python -m catalog_classification.run_experiment --seeds 15`,
-then `analyze_per_class.py` and `analyze_class_composition.py`.
+then `analyze_per_class.py`, `analyze_class_composition.py`, and
+`analyze_reliability_correlation.py`.
 
 ## Setup
 

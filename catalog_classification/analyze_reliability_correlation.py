@@ -35,7 +35,8 @@ def main():
     init = np.array(init)
 
     learner = ActiveLearner(
-        estimator=LGBMClassifier(n_estimators=100, num_leaves=15, min_child_samples=5, verbosity=-1),
+        estimator=LGBMClassifier(n_estimators=100, num_leaves=15, min_child_samples=5,
+                                  verbosity=-1, class_weight="balanced"),
         X=X_pool, label_fn=lambda idx: y_pool[idx],
         score_fn=uncertainty_score, init_indices=init, batch_size=20,
         strategy_name="uncertainty", random_state=0,

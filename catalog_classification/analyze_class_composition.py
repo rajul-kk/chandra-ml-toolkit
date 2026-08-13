@@ -22,7 +22,8 @@ from common.active_learning import ActiveLearner, class_balanced_uncertainty_sco
 
 def run_and_count_classes(score_fn, name, X_pool, y_pool, init, n_rounds=40, batch_size=20, seed=0):
     learner = ActiveLearner(
-        estimator=LGBMClassifier(n_estimators=100, num_leaves=15, min_child_samples=5, verbosity=-1),
+        estimator=LGBMClassifier(n_estimators=100, num_leaves=15, min_child_samples=5,
+                                  verbosity=-1, class_weight="balanced"),
         X=X_pool, label_fn=lambda idx: y_pool[idx],
         score_fn=score_fn, init_indices=init, batch_size=batch_size,
         strategy_name=name, random_state=seed,
