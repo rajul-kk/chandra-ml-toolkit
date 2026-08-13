@@ -22,7 +22,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
 
 from catalog_classification.dataset import load_feature_pool
-from catalog_classification.features import build_feature_matrix
+from catalog_classification.features import LABELS, build_feature_matrix
 from common.active_learning import (
     ActiveLearner,
     margin_score,
@@ -42,10 +42,14 @@ def make_estimator():
 def make_eval_fn(estimator_factory, X_test, y_test):
     def eval_fn(model):
         pred = model.predict(X_test)
-        return {
+        per_class = f1_score(y_test, pred, labels=list(range(len(LABELS))), average=None, zero_division=0)
+        metrics = {
             "accuracy": accuracy_score(y_test, pred),
             "macro_f1": f1_score(y_test, pred, average="macro"),
         }
+        for c_idx, c_name in enumerate(LABELS):
+            metrics[f"f1_{c_name}"] = per_class[c_idx]
+        return metrics
     return eval_fn
 
 
