@@ -129,25 +129,54 @@ limiting factor (class imbalance in the acquisition function, not label
 trustworthiness) is a different problem than the one it was designed
 to solve.
 
-**Honest interpretation and what would fix it:** on this pool (2,191
-sources, 3 severely imbalanced classes - 60 COMPACT_OBJECT examples in
-the training pool after the test split), active learning works as
-expected wherever there's enough class mass for uncertainty to
-concentrate on - a real, significant, reproducible gain on AGN/STAR -
-but does nothing for the class that would matter most to save labels
-on. The natural next experiment (not run here, flagged for anyone
-picking this up) is class-balanced or cost-sensitive acquisition
-- e.g. score by uncertainty *within* each predicted class and sample
-proportionally, rather than uncertainty pooled across all classes -
-which should target the COMPACT_OBJECT gap directly. This is a
-legitimate, actionable finding about *why* AL underdelivers here, not
-just a null result, and the shared `common/` infrastructure it was
-built on is unaffected - it is exactly what the later two modules will
-reuse.
+**Tried the obvious fix - it didn't work, and why is itself informative.**
+The natural response to "uncertainty sampling is crowded out by the
+majority classes" is class-balanced acquisition: rank uncertainty
+*within* each predicted class rather than globally, so a numerically
+tiny class can't be buried under majority-class boundary cases
+(`class_balanced_uncertainty_score` in `common/active_learning.py`).
+Ran it - same 15-seed protocol, added as a fifth strategy. It changed
+nothing: COMPACT_OBJECT plateau F1 = 0.134 vs. random's 0.136 (p=0.87,
+the least significant of any strategy tested), while still keeping the
+AGN/STAR gains (p<0.0001 both, same as plain uncertainty).
+
+Checked why directly (`analyze_class_composition.py`,
+`catalog_classification/analyze_class_composition.py`): class-balanced
+acquisition actually queried *fewer* true COMPACT_OBJECT examples over
+a full run (33/800) than plain uncertainty did (39/800) - the fix
+regressed on its own target metric. The root cause is upstream of
+acquisition: with only 10 seed labels for a class this rare, the
+classifier's own COMPACT_OBJECT probability is barely discriminative
+from the start - mean P(COMPACT_OBJECT) is 0.357 for true compact
+objects vs. 0.303 for everything else, almost the same signal. Bucketing
+pool examples by *predicted* class (what class_balanced_uncertainty_score
+does) inherits that noise: the "predicted-COMPACT_OBJECT" bucket is
+mostly not-actually-compact-objects this early on, so ranking within it
+surfaces noise, not real candidates. This is a cold-start problem
+specific to the rare class, not a batch-composition problem - any
+acquisition function built from this classifier's probabilities inherits
+the same blindness, whether it looks at global uncertainty or
+per-predicted-class uncertainty. Fixing it would need to happen upstream
+of acquisition entirely - e.g. class-weighted training so probability
+estimates are calibrated for the rare class before they're used to score
+anything, or a much larger rare-class seed set than 10 - not a smarter
+query strategy layered on top of an under-informed classifier.
+
+**Bottom line:** active learning delivers a real, reproducible,
+statistically significant benefit on this pool's majority classes, no
+benefit on its minority class, and the reason is diagnosable rather than
+mysterious - a cold-start problem in the classifier's own probability
+estimates that no acquisition-layer fix can route around. This is well
+below the ~15-20% kill-condition threshold as an aggregate label-saving
+result, but it's a complete, actionable, mechanistically-explained
+finding rather than an unexplained null, and the shared `common/`
+infrastructure it was built on (including the now-tested
+`class_balanced_uncertainty_score` strategy) is unaffected - it is
+exactly what the later two modules will reuse.
 
 Raw per-round results: `results/label_efficiency_log.csv`.
-Reproduce: `python -m catalog_classification.run_experiment --seeds 15`
-then `python -m catalog_classification.analyze_per_class`.
+Reproduce: `python -m catalog_classification.run_experiment --seeds 15`,
+then `analyze_per_class.py` and `analyze_class_composition.py`.
 
 ## Setup
 

@@ -25,7 +25,7 @@ def averaged_from_csv(df: pd.DataFrame, strategy: str) -> dict:
 
 def main():
     df = pd.read_csv(RESULTS_DIR / "label_efficiency_log.csv")
-    strategies = ["random", "uncertainty", "margin", "reliability_weighted"]
+    strategies = sorted(df["strategy"].unique())
     averaged = [averaged_from_csv(df, s) for s in strategies]
     plot_label_efficiency_curve(
         averaged, metric="macro_f1", path=RESULTS_DIR / "label_efficiency_curve.png",

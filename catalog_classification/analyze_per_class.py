@@ -23,7 +23,7 @@ def main():
         print("no per-class columns in this CSV - rerun the experiment first")
         return
 
-    strategies = ["random", "uncertainty", "margin", "reliability_weighted"]
+    strategies = sorted(df["strategy"].unique())
 
     for col in class_cols:
         print(f"\n=== {col} ===")

@@ -25,6 +25,7 @@ from catalog_classification.dataset import load_feature_pool
 from catalog_classification.features import LABELS, build_feature_matrix
 from common.active_learning import (
     ActiveLearner,
+    class_balanced_uncertainty_score,
     margin_score,
     random_score,
     reliability_weighted,
@@ -75,6 +76,7 @@ def run(n_seeds: int, n_rounds: int, batch_size: int, init_per_class: int, quiet
         "uncertainty": lambda: uncertainty_score,
         "margin": lambda: margin_score,
         "reliability_weighted": lambda: reliability_weighted(uncertainty_score, rel_pool, alpha=1.0),
+        "class_balanced": lambda: class_balanced_uncertainty_score,
     }
 
     all_histories = {name: [] for name in strategies}
