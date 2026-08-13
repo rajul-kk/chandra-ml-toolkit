@@ -7,6 +7,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 from common.active_learning import (
     ActiveLearner,
+    class_balanced_uncertainty_score,
     margin_score,
     qbc_score,
     random_score,
@@ -64,6 +65,38 @@ def test_reliability_weighted_downweights_low_reliability_examples():
     wrapped = reliability_weighted(uncertainty_score, reliability, alpha=1.0)
     scores = wrapped(StubEstimator(proba), None, None, np.zeros((2, 1)), pool_indices=pool_indices)
     assert scores[0] > scores[1]  # equal raw uncertainty, but 0 is more reliable
+
+
+def test_class_balanced_uncertainty_surfaces_minority_class_examples():
+    """The property this strategy exists for: plain uncertainty_score's
+    top-N is dominated by whichever class has more pool examples, even
+    when a minority class has genuinely uncertain members. Construct a
+    pool where that's true by design and check class_balanced fixes it.
+    """
+    n_majority, n_minority = 90, 10
+    # majority: predicted class 0, raw uncertainty (1 - max proba) spread
+    # from 0.01 up to 0.49 (near the boundary)
+    u_majority = np.linspace(0.01, 0.49, n_majority)
+    majority_proba = np.column_stack([1 - u_majority, u_majority])
+    # minority: predicted class 1, raw uncertainty confined to 0.05-0.20 -
+    # comfortably below the majority's most-uncertain members, so plain
+    # top-N (which only looks at raw uncertainty) should skip it entirely
+    u_minority = np.linspace(0.05, 0.20, n_minority)
+    minority_proba = np.column_stack([u_minority, 1 - u_minority])
+
+    proba = np.vstack([majority_proba, minority_proba])
+    is_minority = np.array([False] * n_majority + [True] * n_minority)
+
+    plain_scores = uncertainty_score(StubEstimator(proba), None, None, np.zeros((100, 1)))
+    balanced_scores = class_balanced_uncertainty_score(StubEstimator(proba), None, None, np.zeros((100, 1)))
+
+    top20_plain = np.argsort(-plain_scores)[:20]
+    top20_balanced = np.argsort(-balanced_scores)[:20]
+
+    plain_minority_count = is_minority[top20_plain].sum()
+    balanced_minority_count = is_minority[top20_balanced].sum()
+    assert plain_minority_count <= 1  # plain uncertainty nearly/entirely misses the minority class
+    assert balanced_minority_count > plain_minority_count  # balanced surfaces more of it
 
 
 def test_reliability_weighted_requires_pool_indices():

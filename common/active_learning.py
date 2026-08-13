@@ -70,6 +70,37 @@ def qbc_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=No
     return scores
 
 
+def class_balanced_uncertainty_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None,
+                                      rng=None, **kw):
+    """Uncertainty sampling, but ranked within each predicted class rather
+    than globally.
+
+    Plain uncertainty_score picks the top-N most-uncertain pool examples
+    across all classes at once; when one class dominates the pool's raw
+    count, its boundary-adjacent examples dominate that top-N by sheer
+    numbers, and a numerically tiny class can go entirely unrepresented in
+    every query batch even though it may be the class most worth labeling.
+    Converting each example's uncertainty to a percentile *within its own
+    predicted class* puts every class on the same [0, 1] scale regardless
+    of how many pool examples currently fall into it, so a batch selected
+    by top-N on this score draws roughly evenly across predicted classes
+    instead of being crowded out by the largest one.
+    """
+    proba = estimator.predict_proba(X_pool)
+    raw_uncertainty = 1.0 - proba.max(axis=1)
+    pred_class = proba.argmax(axis=1)
+    scores = np.zeros_like(raw_uncertainty)
+    for c in np.unique(pred_class):
+        mask = pred_class == c
+        n_c = mask.sum()
+        if n_c <= 1:
+            scores[mask] = 1.0
+            continue
+        ranks = raw_uncertainty[mask].argsort().argsort()
+        scores[mask] = ranks / (n_c - 1)
+    return scores
+
+
 def random_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None, **kw):
     """Control strategy: every example equally worth labeling."""
     rng = check_random_state(rng)
