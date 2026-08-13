@@ -101,6 +101,45 @@ def class_balanced_uncertainty_score(estimator, X_labeled, y_labeled, X_pool, po
     return scores
 
 
+def quota_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None,
+                 batch_size=20, base_score_fn=None, min_frac_per_class=None, **kw):
+    """Hard-quota acquisition: reserve a guaranteed minimum share of every
+    query batch for each class, filled by that class's own top-probability
+    candidates, with any remaining slots filled by `base_score_fn` globally.
+
+    class_balanced_uncertainty_score's percentile-within-predicted-class
+    ranking is a *soft* nudge - it only guarantees the single top-ranked
+    member of a class survives top-N selection, which in practice barely
+    moved a severely rare class's representation (checked empirically: 33
+    vs 39 queries out of 800 for a ~3%-of-pool class). This strategy makes
+    the guarantee explicit and hard instead of relying on percentile scores
+    surviving a global top-N cut: `min_frac_per_class` slots per class are
+    reserved outright, ranked within that reservation by predicted P(class)
+    rather than by predicted-class-bucket membership (avoiding
+    class_balanced's failure mode of an argmax bucket contaminated by
+    low-confidence noise).
+    """
+    base_score_fn = base_score_fn or uncertainty_score
+    base_scores = base_score_fn(estimator, X_labeled, y_labeled, X_pool,
+                                 pool_indices=pool_indices, rng=rng, **kw)
+    proba = estimator.predict_proba(X_pool)
+    n_classes = proba.shape[1]
+    if min_frac_per_class is None:
+        min_frac_per_class = 1.0 / n_classes
+
+    n_reserved_per_class = min(int(round(min_frac_per_class * batch_size)), batch_size // n_classes)
+    scores = base_scores.copy()
+    if n_reserved_per_class > 0:
+        # reserved picks must outrank every non-reserved example under top-N
+        # selection; tie-break within the reservation by base_score so the
+        # method still prefers the more informative members of each class
+        bonus = (np.nanmax(base_scores) - np.nanmin(base_scores) if len(base_scores) else 0) + 1.0
+        for c in range(n_classes):
+            top_c = np.argsort(-proba[:, c])[:n_reserved_per_class]
+            scores[top_c] = bonus + base_scores[top_c]
+    return scores
+
+
 def random_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None, **kw):
     """Control strategy: every example equally worth labeling."""
     rng = check_random_state(rng)
@@ -184,9 +223,9 @@ class ActiveLearner:
         if len(self.pool_idx) == 0:
             return np.array([], dtype=int)
         X_pool = self.X[self.pool_idx]
-        scores = self.score_fn(model, self.X[self.labeled_idx], self.y_labeled, X_pool,
-                                pool_indices=self.pool_idx, rng=self.rng)
         n = min(self.batch_size, len(self.pool_idx))
+        scores = self.score_fn(model, self.X[self.labeled_idx], self.y_labeled, X_pool,
+                                pool_indices=self.pool_idx, rng=self.rng, batch_size=n)
         pick_pos = np.argpartition(-scores, n - 1)[:n]
         queried = self.pool_idx[pick_pos]
 

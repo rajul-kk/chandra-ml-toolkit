@@ -10,6 +10,7 @@ from common.active_learning import (
     class_balanced_uncertainty_score,
     margin_score,
     qbc_score,
+    quota_score,
     random_score,
     reliability_weighted,
     uncertainty_score,
@@ -97,6 +98,38 @@ def test_class_balanced_uncertainty_surfaces_minority_class_examples():
     balanced_minority_count = is_minority[top20_balanced].sum()
     assert plain_minority_count <= 1  # plain uncertainty nearly/entirely misses the minority class
     assert balanced_minority_count > plain_minority_count  # balanced surfaces more of it
+
+
+def test_quota_score_guarantees_minority_representation_where_class_balanced_only_nudges():
+    """quota_score should give a hard guarantee class_balanced couldn't:
+    with min_frac_per_class=0.5 and 2 classes, reserving half the batch
+    per class, every minority-class example should clear the cut here,
+    not just "more than plain uncertainty" the way class_balanced does.
+    """
+    n_majority, n_minority = 90, 10
+    u_majority = np.linspace(0.01, 0.49, n_majority)
+    majority_proba = np.column_stack([1 - u_majority, u_majority])
+    u_minority = np.linspace(0.05, 0.20, n_minority)
+    minority_proba = np.column_stack([u_minority, 1 - u_minority])
+    proba = np.vstack([majority_proba, minority_proba])
+    is_minority = np.array([False] * n_majority + [True] * n_minority)
+
+    scores = quota_score(StubEstimator(proba), None, None, np.zeros((100, 1)),
+                          batch_size=20, min_frac_per_class=0.5)
+    top20 = np.argsort(-scores)[:20]
+    assert is_minority[top20].sum() == n_minority  # every minority example is reserved a slot
+
+
+def test_quota_score_falls_back_to_base_score_fn_for_unreserved_slots():
+    """Slots beyond the per-class reservation should still be filled by
+    the underlying base_score_fn's ranking, not arbitrarily."""
+    proba = np.array([[0.9, 0.1]] * 5 + [[0.1, 0.9]] * 5)
+    scores = quota_score(StubEstimator(proba), None, None, np.zeros((10, 1)),
+                          batch_size=4, min_frac_per_class=0.0, base_score_fn=uncertainty_score)
+    # min_frac_per_class=0 -> no reservation, should just reduce to uncertainty_score
+    # (all rows here are equally confident, 0.1 vs 0.9, so scores should be uniform)
+    plain = uncertainty_score(StubEstimator(proba), None, None, np.zeros((10, 1)))
+    assert np.allclose(scores, plain)
 
 
 def test_reliability_weighted_requires_pool_indices():
