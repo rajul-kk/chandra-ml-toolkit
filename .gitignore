@@ -9,7 +9,7 @@ data/raw/
 data/cache/
 *.fits
 
-# outputs
-results/
+# outputs - results/ is tracked (it's the actual finding), scratch plots aren't
 *.png
+!results/*.png
 !docs/**/*.png

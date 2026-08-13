@@ -63,10 +63,61 @@ The Chandra-Gaia catalog's `p_match_ind` gives a usable per-source
 reliability signal for free, letting the acquisition function be
 corrected for it directly.
 
-**Results:** see `results/` for the label-efficiency curve and
-`catalog_classification/analyze_reliability_correlation.py` for the
-direct measurement of the noise-acquisition correlation.
-_(filled in once the full run completes)_
+**Results (negative/mixed finding, 15 seeds, LightGBM, macro-F1):**
+
+![label efficiency curve](results/label_efficiency_curve.png)
+
+Active learning does **not** produce a statistically significant label
+saving over random sampling on this pool. All four strategies (random,
+uncertainty, margin, reliability-weighted) converge to the same macro-F1
+plateau (~0.637-0.643) by roughly 150-300 labels and stay statistically
+indistinguishable out to the full 830-label budget (paired comparison at
+the plateau, n=75 pooled samples per strategy: p=0.19 uncertainty,
+p=0.26 margin, p=0.44 reliability-weighted vs. random - none below 0.05).
+
+This is well below the ~15-20% saving the original scoping treated as the
+threshold for a positive result, let alone RB-C1000's ~60%. An early,
+naive read of this experiment (5 seeds, comparing each strategy to
+random's literal final round) reported 80%+ "savings" - that was an
+artifact of random sampling's macro-F1 plateauing and then oscillating
+rather than climbing, which makes "labels needed to match the final
+round" measure noise, not real efficiency, once a curve has flattened.
+Fixing `eval_utils.labels_to_match` to target a tail-window average
+(see `common/eval_utils.py`) and re-running at 15 seeds for power
+resolved it into the null result above.
+
+**Layer 2 (why):** the mechanism motivating reliability-weighted
+acquisition - that classifier uncertainty and counterpart-match
+unreliability are correlated, so vanilla uncertainty sampling
+preferentially queries untrustworthy labels - does hold at the
+*class* level (COMPACT_OBJECT's mean `p_match_ind` is 0.82 vs. AGN's
+0.95) but is essentially absent at the *acquisition* level: the
+point-biserial correlation between "queried by uncertainty sampling"
+and match reliability is r=-0.03 (p=0.19,
+`catalog_classification/analyze_reliability_correlation.py`), i.e. not
+distinguishable from zero. Uncertainty sampling does mildly
+overrepresent the rare COMPACT_OBJECT class in what it queries (4.9%
+of queries vs. 3.4% of the pool) but not by preferentially picking its
+least-reliable members - which is consistent with reliability-weighted
+acquisition showing no benefit: there's little acquisition-level noise
+correlation for it to correct.
+
+**Honest interpretation:** on this pool (2,191 sources, 3 imbalanced
+classes, ~20-feature X-ray/optical/reliability feature set), the
+classification problem saturates almost immediately relative to the
+available label budget - random sampling reaches ~90% of its final
+macro-F1 within ~150 of 1,753 pool labels. There simply isn't much room
+for a smarter query strategy to outperform random when the pool is this
+small and the useful signal this concentrated; AL's advantage in the
+literature (e.g. RB-C1000) shows up in much larger pools where random
+sampling wastes most of its budget on redundant examples before reaching
+the informative region. This is a legitimate, if unglamorous, negative
+result for AL's applicability to counterpart-classification-scale CSC
+label budgets, and the shared `common/` infrastructure it was built on
+is unaffected - it is exactly what the later two modules will reuse.
+
+Raw per-round results: `results/label_efficiency_log.csv`.
+Reproduce: `python -m catalog_classification.run_experiment --seeds 15`.
 
 ## Setup
 
