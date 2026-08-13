@@ -63,61 +63,91 @@ The Chandra-Gaia catalog's `p_match_ind` gives a usable per-source
 reliability signal for free, letting the acquisition function be
 corrected for it directly.
 
-**Results (negative/mixed finding, 15 seeds, LightGBM, macro-F1):**
+**Results (15 seeds, LightGBM): aggregate macro-F1 is flat, but that
+average hides a real, class-imbalanced effect.**
 
 ![label efficiency curve](results/label_efficiency_curve.png)
 
-Active learning does **not** produce a statistically significant label
-saving over random sampling on this pool. All four strategies (random,
-uncertainty, margin, reliability-weighted) converge to the same macro-F1
-plateau (~0.637-0.643) by roughly 150-300 labels and stay statistically
-indistinguishable out to the full 830-label budget (paired comparison at
-the plateau, n=75 pooled samples per strategy: p=0.19 uncertainty,
-p=0.26 margin, p=0.44 reliability-weighted vs. random - none below 0.05).
+At the aggregate level, active learning does **not** produce a
+statistically significant macro-F1 saving over random sampling: all
+four strategies converge to the same plateau (~0.637-0.643) by
+150-300 labels (paired comparison at the plateau, n=75 pooled samples
+per strategy: p=0.19 uncertainty, p=0.26 margin, p=0.44
+reliability-weighted vs. random - none below 0.05). That number alone
+is well below the ~15-20% saving the original scoping treated as a
+positive result. (An early 5-seed read reported 80%+ "savings" -
+an artifact of matching random's noisy, already-flat final round
+rather than a tail-window plateau; see `common/eval_utils.py`'s
+`labels_to_match`, fixed once the artifact was caught.)
 
-This is well below the ~15-20% saving the original scoping treated as the
-threshold for a positive result, let alone RB-C1000's ~60%. An early,
-naive read of this experiment (5 seeds, comparing each strategy to
-random's literal final round) reported 80%+ "savings" - that was an
-artifact of random sampling's macro-F1 plateauing and then oscillating
-rather than climbing, which makes "labels needed to match the final
-round" measure noise, not real efficiency, once a curve has flattened.
-Fixing `eval_utils.labels_to_match` to target a tail-window average
-(see `common/eval_utils.py`) and re-running at 15 seeds for power
-resolved it into the null result above.
+**But the aggregate hides where the effect actually is.** Breaking
+macro-F1 into its three per-class components
+(`catalog_classification/analyze_per_class.py`):
 
-**Layer 2 (why):** the mechanism motivating reliability-weighted
-acquisition - that classifier uncertainty and counterpart-match
-unreliability are correlated, so vanilla uncertainty sampling
-preferentially queries untrustworthy labels - does hold at the
-*class* level (COMPACT_OBJECT's mean `p_match_ind` is 0.82 vs. AGN's
-0.95) but is essentially absent at the *acquisition* level: the
-point-biserial correlation between "queried by uncertainty sampling"
-and match reliability is r=-0.03 (p=0.19,
-`catalog_classification/analyze_reliability_correlation.py`), i.e. not
-distinguishable from zero. Uncertainty sampling does mildly
-overrepresent the rare COMPACT_OBJECT class in what it queries (4.9%
-of queries vs. 3.4% of the pool) but not by preferentially picking its
-least-reliable members - which is consistent with reliability-weighted
-acquisition showing no benefit: there's little acquisition-level noise
-correlation for it to correct.
+![per-class F1 curves](results/per_class_f1_curves.png)
 
-**Honest interpretation:** on this pool (2,191 sources, 3 imbalanced
-classes, ~20-feature X-ray/optical/reliability feature set), the
-classification problem saturates almost immediately relative to the
-available label budget - random sampling reaches ~90% of its final
-macro-F1 within ~150 of 1,753 pool labels. There simply isn't much room
-for a smarter query strategy to outperform random when the pool is this
-small and the useful signal this concentrated; AL's advantage in the
-literature (e.g. RB-C1000) shows up in much larger pools where random
-sampling wastes most of its budget on redundant examples before reaching
-the informative region. This is a legitimate, if unglamorous, negative
-result for AL's applicability to counterpart-classification-scale CSC
-label budgets, and the shared `common/` infrastructure it was built on
-is unaffected - it is exactly what the later two modules will reuse.
+| class | share of pool | random plateau F1 | AL plateau F1 | p (vs. random) |
+|---|---|---|---|---|
+| AGN | 45% | 0.874 | 0.886 (uncertainty) | **p < 0.0001** |
+| STAR | 51% | 0.903 | 0.912 (uncertainty) | **p < 0.0001** |
+| COMPACT_OBJECT | 3% | 0.136 | 0.124-0.130 | p = 0.29-0.65 (n.s.) |
+
+Active learning gives a small but highly significant, consistent boost
+on the two classes that make up 97% of the pool (AGN, STAR) - real
+signal, not noise, at n=75 pooled samples per comparison. On the rare
+COMPACT_OBJECT class it gives *no* benefit, and if anything trends
+slightly worse than random, though that direction alone isn't
+significant. Since macro-F1 weights all three classes equally, a real
+~1.2-point gain on two classes gets diluted by a flat-to-negative third
+class, netting the small, non-significant aggregate move that looked
+like a clean null result before this breakdown.
+
+**Why:** uncertainty-based acquisition scores every pool example by
+distance from the classifier's decision boundary. With AGN+STAR at 97%
+of the pool, most boundary-adjacent (uncertain) examples are AGN/STAR
+confusions, so the acquisition function spends its budget refining that
+boundary - which is exactly where it helps. The ~60-source
+COMPACT_OBJECT class is numerically too small to dominate uncertainty
+rankings on its own, so plain uncertainty sampling doesn't preferentially
+resolve it. This is a distinct mechanism from the label-noise hypothesis
+`reliability_weighted` was built to test.
+
+**Layer 2 (the noise-correlation hypothesis specifically):** the
+mechanism motivating reliability-weighted acquisition - that classifier
+uncertainty and counterpart-match unreliability are correlated, so
+vanilla uncertainty sampling preferentially queries untrustworthy labels
+- does hold at the *class* level (COMPACT_OBJECT's mean `p_match_ind`
+is 0.82 vs. AGN's 0.95) but is essentially absent at the *acquisition*
+level: the point-biserial correlation between "queried by uncertainty
+sampling" and match reliability is r=-0.03 (p=0.19,
+`catalog_classification/analyze_reliability_correlation.py`), not
+distinguishable from zero. That's consistent with
+`reliability_weighted` showing no benefit over plain uncertainty
+sampling anywhere in the per-class breakdown either - there's little
+acquisition-level noise correlation for it to correct, and the actual
+limiting factor (class imbalance in the acquisition function, not label
+trustworthiness) is a different problem than the one it was designed
+to solve.
+
+**Honest interpretation and what would fix it:** on this pool (2,191
+sources, 3 severely imbalanced classes - 60 COMPACT_OBJECT examples in
+the training pool after the test split), active learning works as
+expected wherever there's enough class mass for uncertainty to
+concentrate on - a real, significant, reproducible gain on AGN/STAR -
+but does nothing for the class that would matter most to save labels
+on. The natural next experiment (not run here, flagged for anyone
+picking this up) is class-balanced or cost-sensitive acquisition
+- e.g. score by uncertainty *within* each predicted class and sample
+proportionally, rather than uncertainty pooled across all classes -
+which should target the COMPACT_OBJECT gap directly. This is a
+legitimate, actionable finding about *why* AL underdelivers here, not
+just a null result, and the shared `common/` infrastructure it was
+built on is unaffected - it is exactly what the later two modules will
+reuse.
 
 Raw per-round results: `results/label_efficiency_log.csv`.
-Reproduce: `python -m catalog_classification.run_experiment --seeds 15`.
+Reproduce: `python -m catalog_classification.run_experiment --seeds 15`
+then `python -m catalog_classification.analyze_per_class`.
 
 ## Setup
 
