@@ -115,8 +115,10 @@ def run(n_seeds: int, n_rounds: int, batch_size: int, init_per_class: int, quiet
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true", help="fast sanity run")
+    parser.add_argument("--seeds", type=int, default=15)
+    parser.add_argument("--rounds", type=int, default=40)
     args = parser.parse_args()
     if args.quick:
         run(n_seeds=2, n_rounds=10, batch_size=20, init_per_class=5)
     else:
-        run(n_seeds=5, n_rounds=40, batch_size=20, init_per_class=10)
+        run(n_seeds=args.seeds, n_rounds=args.rounds, batch_size=20, init_per_class=10)

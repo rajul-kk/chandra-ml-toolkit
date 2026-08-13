@@ -71,14 +71,28 @@ def average_histories(histories: List[LearningHistory], strategy_name: Optional[
     return out
 
 
-def labels_to_match(candidate: dict, reference: dict, metric: str) -> Optional[int]:
-    """How many labels `candidate` needs to first reach `reference`'s final
-    score on `metric`. Returns None if it never does within the run.
+def plateau_score(entry: dict, metric: str, window: int = 5) -> float:
+    """Mean of the last `window` rounds' score, as the target for
+    labels_to_match. A single final round is a noisy point estimate once a
+    curve has plateaued (seen in practice: random sampling's macro-F1
+    oscillates +/-0.03 round to round after saturating) - averaging a tail
+    window avoids "labels to match" being decided by which way that noise
+    happened to land on the last round.
+    """
+    means = entry[metric]["mean"]
+    tail = means[-window:] if len(means) >= window else means
+    return float(np.mean(tail))
+
+
+def labels_to_match(candidate: dict, reference: dict, metric: str, window: int = 5) -> Optional[int]:
+    """How many labels `candidate` needs to first reach reference's
+    plateau score (mean of its last `window` rounds) on `metric`. Returns
+    None if it never does within the run.
 
     Both args are averaged-history dicts (from average_histories) sharing
     the same metric. This is the headline "label savings" number.
     """
-    target = reference[metric]["mean"][-1]
+    target = plateau_score(reference, metric, window)
     means = candidate[metric]["mean"]
     for n, score in zip(candidate["n_labels"], means):
         if score >= target:
@@ -86,12 +100,12 @@ def labels_to_match(candidate: dict, reference: dict, metric: str) -> Optional[i
     return None
 
 
-def label_savings_fraction(candidate: dict, reference: dict, metric: str) -> Optional[float]:
+def label_savings_fraction(candidate: dict, reference: dict, metric: str, window: int = 5) -> Optional[float]:
     """Fraction of reference's final label budget saved by candidate
-    reaching the same score, e.g. 0.6 means candidate used 60% fewer labels.
-    None if candidate never matched reference within its run.
+    reaching the same plateau score, e.g. 0.6 means candidate used 60%
+    fewer labels. None if candidate never matched reference within its run.
     """
-    n_needed = labels_to_match(candidate, reference, metric)
+    n_needed = labels_to_match(candidate, reference, metric, window)
     if n_needed is None:
         return None
     n_reference = reference["n_labels"][-1]

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from common.active_learning import LearningHistory
@@ -7,6 +8,7 @@ from common.eval_utils import (
     average_histories,
     label_savings_fraction,
     labels_to_match,
+    plateau_score,
     write_csv,
 )
 
@@ -56,6 +58,15 @@ def test_labels_to_match_returns_none_if_never_reached():
     candidate = {"n_labels": [10, 20], "accuracy": {"mean": [0.1, 0.2], "std": [0, 0]}}
     reference = {"n_labels": [50], "accuracy": {"mean": [0.9], "std": [0]}}
     assert labels_to_match(candidate, reference, "accuracy") is None
+
+
+def test_labels_to_match_uses_tail_window_not_single_noisy_final_round():
+    # reference oscillates around 0.6 at the end - a single noisy final
+    # round (0.55) shouldn't set the target; the tail-window mean should
+    entry = {"n_labels": [10, 20, 30, 40, 50, 60],
+              "accuracy": {"mean": [0.3, 0.5, 0.63, 0.58, 0.62, 0.55], "std": [0] * 6}}
+    target = plateau_score(entry, "accuracy", window=5)
+    assert target == pytest.approx(np.mean([0.5, 0.63, 0.58, 0.62, 0.55]))
 
 
 def test_label_savings_fraction_computes_expected_saving():
