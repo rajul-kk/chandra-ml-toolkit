@@ -206,21 +206,72 @@ members, while random sampling of a well-weighted classifier gets a
 more prototypical cross-section - worth testing directly in a future
 iteration, not confirmed here.
 
-**Bottom line:** active learning delivers a real, reproducible,
-statistically significant benefit on this pool's majority classes,
-no benefit - and possibly mild harm from one strategy - on its minority
-class, and this holds up under a controlled comparison once the
-classifier-calibration confound is fixed. Class-weighted training is a
-genuine, substantial improvement (raises the ceiling ~42% on the class
-that matters most), but it's a training-side lever that helps every
-acquisition strategy equally, including random - it does not create
-headroom for AL specifically to exploit. This is well below the
+**Tried the strongest possible version of the fix: a hard quota, not a
+soft nudge.** `class_balanced_uncertainty_score`'s percentile-within-
+predicted-class ranking only *guarantees* the single top-ranked member of
+a class survives a global top-N cut - which is why it barely moved
+COMPACT_OBJECT's query count (33->37 of 800). Built `quota_score`
+(`common/active_learning.py`) to remove that weakness: it explicitly
+reserves a fixed share of every batch per class (here, 1/3, since there
+are 3 classes - 6 of every 20-example batch), filled by that class's own
+top-predicted-probability candidates, with a score bonus that guarantees
+those reserved picks clear the top-N selection regardless of how the
+other 2/3 of the batch is scored. Ran the full 15-seed sweep with it as
+a sixth strategy, class-weighted training included.
+
+It queried **fewer** true COMPACT_OBJECT examples (32/800) than plain
+uncertainty (36) or class_balanced (37) - despite reserving 6 slots/round
+for 40 rounds (240 reservation-slots total) against a pool that only
+contains 50 true compact objects excluding the seed set. The reservation
+mechanism had more than enough capacity to capture every single available
+compact object several times over, and still captured fewer of them than
+strategies with no explicit reservation at all. And it cost something
+real in exchange: at n=150, quota's AGN/STAR F1 (0.806/0.828) trails
+every other strategy including random (0.823/0.861), because diverting a
+third of every batch away from the majority classes slows their
+well-established, real learning curve. It recovers to statistically tie
+random on AGN/STAR by the plateau (p=0.85, p=0.32) but never catches the
+other four AL strategies, which sit significantly above random throughout
+(p<0.0001). On COMPACT_OBJECT itself: plateau F1 = 0.198 vs. random's
+0.193 (p=0.62) - no better than doing nothing differently at all.
+
+This is the most informative negative result of the six strategies
+tested, because it isolates *where* the failure actually lives. The
+reservation mechanism worked exactly as designed - the shortfall isn't
+in how many slots got allocated to the rare class, it's in *which*
+examples fill those slots: ranking by the classifier's own
+P(COMPACT_OBJECT), even restricted to a dedicated reserved bucket, still
+can't reliably tell a true compact object from a false positive that
+merely resembles one. Every acquisition strategy tested here - soft or
+hard, global or class-bucketed, uncertainty-based or reliability-based -
+routes through the same classifier's probability estimates to decide
+*which* rare-class candidates to query, and all of them inherit the same
+underlying noise. Forcing more slots doesn't fix a ranking problem within
+those slots. The next thing worth trying, not attempted here, would need
+to escape this dependency entirely - e.g. an acquisition signal built
+from feature-space distance to already-labeled compact objects, or an
+unsupervised outlier score, rather than anything derived from this
+classifier's own predictions.
+
+**Bottom line:** across six acquisition strategies (uncertainty, margin,
+QBC-style reliability-weighting, soft class-balancing, hard quota) and
+one training-side intervention (class-weighted loss), active learning
+delivers a real, reproducible, statistically significant benefit on this
+pool's majority classes (AGN, STAR: p<0.0001, every strategy) and no
+significant benefit - one strategy is significantly worse (p=0.032) -
+on its minority class, under every variation tested. Class-weighted
+training substantially raises the achievable ceiling for the rare class
+(~42% relative F1 gain) but is a strategy-agnostic lever that helps
+random sampling exactly as much as any acquisition strategy - it does
+not create headroom for smarter querying to exploit, and no acquisition
+strategy tested here closes that gap either, including one purpose-built
+to guarantee representation by construction. This is well below the
 ~15-20% kill-condition threshold as an aggregate label-saving result,
-but it's a complete, controlled, mechanistically-explained finding
-rather than an unexplained null, and the shared `common/` infrastructure
-it was built on (including the now-tested `class_balanced_uncertainty_score`
-strategy) is unaffected - it is exactly what the later two modules will
-reuse.
+but it's a complete, thoroughly controlled, mechanistically-explained
+finding - not an unexplained null - and the shared `common/`
+infrastructure it was built on (six tested acquisition strategies plus
+class-weighting as a documented training-side lever) is unaffected and
+is exactly what the later two modules will reuse.
 
 Raw per-round results: `results/label_efficiency_log.csv`.
 Reproduce: `python -m catalog_classification.run_experiment --seeds 15`,

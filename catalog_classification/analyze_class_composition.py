@@ -17,7 +17,12 @@ from sklearn.model_selection import train_test_split
 
 from catalog_classification.dataset import load_feature_pool
 from catalog_classification.features import LABELS, build_feature_matrix
-from common.active_learning import ActiveLearner, class_balanced_uncertainty_score, uncertainty_score
+from common.active_learning import (
+    ActiveLearner,
+    class_balanced_uncertainty_score,
+    quota_score,
+    uncertainty_score,
+)
 
 
 def run_and_count_classes(score_fn, name, X_pool, y_pool, init, n_rounds=40, batch_size=20, seed=0):
@@ -60,7 +65,8 @@ def main():
           f"{n_compact_in_pool - (y_pool[init] == LABELS.index('COMPACT_OBJECT')).sum()}")
 
     for score_fn, name in [(uncertainty_score, "uncertainty"),
-                            (class_balanced_uncertainty_score, "class_balanced")]:
+                            (class_balanced_uncertainty_score, "class_balanced"),
+                            (quota_score, "quota")]:
         counts, total = run_and_count_classes(score_fn, name, X_pool, y_pool, init)
         print(f"\n{name}: {total} labels queried")
         for c, n in counts.items():
