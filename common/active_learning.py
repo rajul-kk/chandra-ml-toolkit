@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 import numpy as np
+from scipy.spatial.distance import cdist
 from sklearn.base import clone
 from sklearn.utils import check_random_state
 
@@ -137,6 +138,71 @@ def quota_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=
         for c in range(n_classes):
             top_c = np.argsort(-proba[:, c])[:n_reserved_per_class]
             scores[top_c] = bonus + base_scores[top_c]
+    return scores
+
+
+def prototype_distance_score(estimator, X_labeled, y_labeled, X_pool, pool_indices=None, rng=None,
+                              batch_size=20, quota_frac=None, k_neighbors=5,
+                              base_score_fn=None, **kw):
+    """Classifier-independent acquisition for the rarest currently-labeled
+    class: score pool examples by feature-space proximity to that class's
+    own labeled members, entirely bypassing the classifier's predict_proba.
+
+    Every other strategy in this module - uncertainty, margin,
+    class_balanced, quota, reliability_weighted - ultimately ranks pool
+    examples using this classifier's own probability estimates. Checked
+    empirically (see chandra-toolkit's catalog_classification results):
+    under severe class imbalance with few labels, those estimates are
+    barely discriminative for the rare class, and every probability-based
+    strategy inherits that blindness, including a hard quota reserving
+    slots for it explicitly. This strategy tries a different signal:
+    raw distance in (z-scored) feature space to already-labeled examples
+    of whichever class currently has the fewest labels, on the premise
+    that "looks like the other members of this rare class" doesn't
+    require the classifier to have learned anything about that class yet.
+
+    Reserves `quota_frac` of the batch (default 1/n_classes) for the
+    pool examples closest to that class's labeled prototypes (mean
+    distance to their `k_neighbors` nearest labeled members), with the
+    rest of the batch filled by `base_score_fn` (default uncertainty_score)
+    exactly as in quota_score. Falls back to `base_score_fn` alone if the
+    rarest class has no labeled examples yet to build prototypes from.
+    """
+    base_score_fn = base_score_fn or uncertainty_score
+    base_scores = base_score_fn(estimator, X_labeled, y_labeled, X_pool,
+                                 pool_indices=pool_indices, rng=rng, **kw)
+
+    classes, counts = np.unique(y_labeled, return_counts=True)
+    if len(classes) == 0:
+        return base_scores
+    rarest_class = classes[np.argmin(counts)]
+    X_rare = X_labeled[y_labeled == rarest_class]
+    if len(X_rare) == 0:
+        return base_scores
+
+    # z-score using combined labeled+pool statistics so distance isn't
+    # dominated by whichever raw feature happens to have the largest scale
+    combined = np.vstack([X_labeled, X_pool])
+    mu = combined.mean(axis=0)
+    sigma = combined.std(axis=0)
+    sigma[sigma == 0] = 1.0
+    X_rare_z = (X_rare - mu) / sigma
+    X_pool_z = (X_pool - mu) / sigma
+
+    k = min(k_neighbors, len(X_rare_z))
+    dists = cdist(X_pool_z, X_rare_z)
+    nearest_k = np.sort(dists, axis=1)[:, :k]
+    proximity = -nearest_k.mean(axis=1)  # higher = closer to the rare class's labeled members
+
+    n_classes = len(classes)
+    quota_frac = quota_frac if quota_frac is not None else 1.0 / n_classes
+    n_reserved = min(int(round(quota_frac * batch_size)), batch_size)
+
+    scores = base_scores.copy()
+    if n_reserved > 0:
+        top_prototype = np.argsort(-proximity)[:n_reserved]
+        bonus = (np.nanmax(base_scores) - np.nanmin(base_scores) if len(base_scores) else 0) + 1.0
+        scores[top_prototype] = bonus + proximity[top_prototype]
     return scores
 
 

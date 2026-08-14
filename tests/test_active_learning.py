@@ -9,6 +9,7 @@ from common.active_learning import (
     ActiveLearner,
     class_balanced_uncertainty_score,
     margin_score,
+    prototype_distance_score,
     qbc_score,
     quota_score,
     random_score,
@@ -129,6 +130,69 @@ def test_quota_score_falls_back_to_base_score_fn_for_unreserved_slots():
     # min_frac_per_class=0 -> no reservation, should just reduce to uncertainty_score
     # (all rows here are equally confident, 0.1 vs 0.9, so scores should be uniform)
     plain = uncertainty_score(StubEstimator(proba), None, None, np.zeros((10, 1)))
+    assert np.allclose(scores, plain)
+
+
+def test_prototype_distance_finds_rare_class_lookalikes_that_uncertainty_misses():
+    """The property this strategy exists for: when the classifier's own
+    probabilities are wrong about the rare class (confidently misclassifies
+    true rare-class-like pool points as the majority class), a
+    probability-based strategy can't find them - but feature-space
+    proximity to the rare class's own labeled examples still can.
+    """
+    # 8 majority-class (0) labeled examples near the origin, 2 rare-class
+    # (1) labeled examples near (10, 10)
+    X_labeled = np.array([
+        [0, 0], [0, 1], [1, 0], [1, 1], [0, -1], [-1, 0], [-1, -1], [1, -1],
+        [10, 10], [10, 11],
+    ], dtype=float)
+    y_labeled = np.array([0] * 8 + [1] * 2)
+
+    # pool: 3 points genuinely near the rare class's labeled prototypes,
+    # 7 decoy points near the origin
+    X_pool = np.array([
+        [10, 10.5], [9.5, 10], [10.2, 9.8],           # near rare-class prototypes
+        [0, 2], [2, 0], [0, -2], [-2, 0], [3, 3], [3, -3], [-3, 3],  # decoys
+    ], dtype=float)
+    near_rare = np.array([True, True, True] + [False] * 7)
+
+    # classifier is confidently WRONG about the near-rare-class points
+    # (low uncertainty, predicted as majority class) and genuinely uncertain
+    # about the decoys - so plain uncertainty_score ranks decoys highest
+    proba = np.array(
+        [[0.95, 0.05]] * 3 +   # near-rare-class points: confident, wrong
+        [[0.5, 0.5]] * 7       # decoys: genuinely uncertain
+    )
+    estimator = StubEstimator(proba)
+
+    plain_scores = uncertainty_score(estimator, X_labeled, y_labeled, X_pool)
+    top4_plain = np.argsort(-plain_scores)[:4]
+    assert near_rare[top4_plain].sum() == 0  # plain uncertainty finds none of them
+
+    proto_scores = prototype_distance_score(estimator, X_labeled, y_labeled, X_pool,
+                                             batch_size=4, quota_frac=0.5)
+    top4_proto = np.argsort(-proto_scores)[:4]
+    assert near_rare[top4_proto].sum() >= 2  # prototype distance surfaces them anyway
+
+
+def test_prototype_distance_falls_back_to_base_score_when_no_labels_yet():
+    proba = np.array([[0.6, 0.4]] * 5)
+    X_pool = np.zeros((5, 2))
+    scores = prototype_distance_score(StubEstimator(proba), np.zeros((0, 2)), np.array([]), X_pool)
+    plain = uncertainty_score(StubEstimator(proba), np.zeros((0, 2)), np.array([]), X_pool)
+    assert np.allclose(scores, plain)
+
+
+def test_prototype_distance_with_zero_quota_reduces_to_base_score_fn():
+    X_labeled = np.array([[0, 0], [10, 10]], dtype=float)
+    y_labeled = np.array([0, 1])
+    X_pool = np.array([[1, 1], [9, 9], [5, 5]], dtype=float)
+    proba = np.array([[0.7, 0.3], [0.3, 0.7], [0.5, 0.5]])
+    estimator = StubEstimator(proba)
+
+    scores = prototype_distance_score(estimator, X_labeled, y_labeled, X_pool,
+                                       batch_size=4, quota_frac=0.0)
+    plain = uncertainty_score(estimator, X_labeled, y_labeled, X_pool)
     assert np.allclose(scores, plain)
 
 
