@@ -20,6 +20,7 @@ from catalog_classification.features import LABELS, build_feature_matrix
 from common.active_learning import (
     ActiveLearner,
     class_balanced_uncertainty_score,
+    prototype_distance_score,
     quota_score,
     uncertainty_score,
 )
@@ -66,7 +67,8 @@ def main():
 
     for score_fn, name in [(uncertainty_score, "uncertainty"),
                             (class_balanced_uncertainty_score, "class_balanced"),
-                            (quota_score, "quota")]:
+                            (quota_score, "quota"),
+                            (prototype_distance_score, "prototype")]:
         counts, total = run_and_count_classes(score_fn, name, X_pool, y_pool, init)
         print(f"\n{name}: {total} labels queried")
         for c, n in counts.items():

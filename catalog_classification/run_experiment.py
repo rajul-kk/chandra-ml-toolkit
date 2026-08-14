@@ -27,6 +27,7 @@ from common.active_learning import (
     ActiveLearner,
     class_balanced_uncertainty_score,
     margin_score,
+    prototype_distance_score,
     quota_score,
     random_score,
     reliability_weighted,
@@ -87,6 +88,7 @@ def run(n_seeds: int, n_rounds: int, batch_size: int, init_per_class: int, quiet
         "reliability_weighted": lambda: reliability_weighted(uncertainty_score, rel_pool, alpha=1.0),
         "class_balanced": lambda: class_balanced_uncertainty_score,
         "quota": lambda: quota_score,
+        "prototype": lambda: prototype_distance_score,
     }
 
     all_histories = {name: [] for name in strategies}

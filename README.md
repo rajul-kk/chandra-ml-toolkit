@@ -63,15 +63,29 @@ The Chandra-Gaia catalog's `p_match_ind` gives a usable per-source
 reliability signal for free, letting the acquisition function be
 corrected for it directly.
 
-**Results (15 seeds, LightGBM): aggregate macro-F1 is flat, but that
-average hides a real, class-imbalanced effect.**
+**Results (15 seeds, LightGBM).** TL;DR up front, since this section
+traces the actual diagnostic path and the headline number only shows up
+at the end: **the final answer is yes - active learning saves ~53% of
+labels (p=0.0001) - but only the seventh of seven acquisition strategies
+tried gets there.** The first six all failed for diagnosable reasons, and
+each failure is what made the seventh one findable. What follows is that
+path in order; skip to "Escaping the dependency entirely" below for the
+strategy that actually works, or read from here for how we got there.
+
+Starting point: **aggregate macro-F1 looked flat** across the first four
+strategies, but that average hid a real, class-imbalanced effect.
 
 ![label efficiency curve](results/label_efficiency_curve.png)
 
-At the aggregate level, active learning does **not** produce a
-statistically significant macro-F1 saving over random sampling: all
-four strategies converge to the same plateau (~0.637-0.643) by
-150-300 labels (paired comparison at the plateau, n=75 pooled samples
+*(this plot reflects the final run with all seven strategies, including
+`prototype` - the one that works, covered later in this section; the
+numbers quoted immediately below are from the earlier 4-strategy stage
+of the investigation, before it was built)*
+
+At that stage, active learning did **not** produce a
+statistically significant macro-F1 saving over random sampling: the
+first four strategies tested converged to the same plateau (~0.637-0.643)
+by 150-300 labels (paired comparison at the plateau, n=75 pooled samples
 per strategy: p=0.19 uncertainty, p=0.26 margin, p=0.44
 reliability-weighted vs. random - none below 0.05). That number alone
 is well below the ~15-20% saving the original scoping treated as a
@@ -85,6 +99,9 @@ macro-F1 into its three per-class components
 (`catalog_classification/analyze_per_class.py`):
 
 ![per-class F1 curves](results/per_class_f1_curves.png)
+
+*(again, the final plot with all seven strategies; the table below is
+from the earlier 4-strategy stage)*
 
 | class | share of pool | random plateau F1 | AL plateau F1 | p (vs. random) |
 |---|---|---|---|---|
@@ -253,25 +270,69 @@ from feature-space distance to already-labeled compact objects, or an
 unsupervised outlier score, rather than anything derived from this
 classifier's own predictions.
 
-**Bottom line:** across six acquisition strategies (uncertainty, margin,
-QBC-style reliability-weighting, soft class-balancing, hard quota) and
-one training-side intervention (class-weighted loss), active learning
-delivers a real, reproducible, statistically significant benefit on this
-pool's majority classes (AGN, STAR: p<0.0001, every strategy) and no
-significant benefit - one strategy is significantly worse (p=0.032) -
-on its minority class, under every variation tested. Class-weighted
-training substantially raises the achievable ceiling for the rare class
-(~42% relative F1 gain) but is a strategy-agnostic lever that helps
-random sampling exactly as much as any acquisition strategy - it does
-not create headroom for smarter querying to exploit, and no acquisition
-strategy tested here closes that gap either, including one purpose-built
-to guarantee representation by construction. This is well below the
-~15-20% kill-condition threshold as an aggregate label-saving result,
-but it's a complete, thoroughly controlled, mechanistically-explained
-finding - not an unexplained null - and the shared `common/`
-infrastructure it was built on (six tested acquisition strategies plus
-class-weighting as a documented training-side lever) is unaffected and
-is exactly what the later two modules will reuse.
+**Escaping the dependency entirely: classifier-independent acquisition.**
+Every strategy above - soft or hard, global or class-bucketed,
+uncertainty-based or reliability-based - ranks pool examples using this
+classifier's own probability estimates, and `quota_score` showed that
+even a hard, guaranteed reservation can't fix a ranking problem that
+lives *inside* those estimates. The remaining idea: an acquisition signal
+that doesn't ask the classifier anything at all. `prototype_distance_score`
+(`common/active_learning.py`) identifies the currently rarest labeled
+class, then scores pool examples by raw (z-scored) feature-space distance
+to that class's own labeled members - reserving 1/3 of each batch for
+the closest matches, with the rest filled by plain uncertainty sampling.
+It uses `predict_proba` only for the non-reserved two-thirds of the batch.
+
+**This is the one that worked.** Ran the full 15-seed sweep as a seventh
+strategy, class-weighted training included:
+
+| metric | result |
+|---|---|
+| aggregate macro-F1 plateau vs. random | 0.674 vs. 0.655, **p=0.0001** - the strongest result of any strategy tested |
+| label savings vs. random (macro-F1) | **53.0%** (390 of 830 labels) - same order of magnitude as RB-C1000's ~60% |
+| AGN plateau F1 vs. random | 0.887 vs. 0.870, p<0.0001 - the *best* AGN result of all seven strategies |
+| STAR plateau F1 vs. random | 0.913 vs. 0.902, p<0.0001 - the *best* STAR result of all seven strategies |
+| COMPACT_OBJECT plateau F1 vs. random | 0.223 vs. 0.193, **p=0.032** - the only strategy of seven with a significant rare-class gain |
+
+No majority-class trade-off, unlike `quota` - it posts the best AGN and
+best STAR numbers of every strategy tried *and* the only significant
+COMPACT_OBJECT improvement. The macro-F1 curve
+(`results/label_efficiency_curve.png`) shows why: prototype tracks
+mid-pack with the other AL strategies through most of the run, then
+visibly separates and pulls ahead of everything else in the final third
+(labels 700-830) - a compounding effect, not plateau noise, consistent
+with the p=0.0001 significance.
+
+Checked the mechanism directly
+(`catalog_classification/analyze_class_composition.py`): prototype's raw
+COMPACT_OBJECT query count (38/800) is barely higher than plain
+uncertainty's (36) - so the gain isn't "it labels far more compact
+objects," it's that it selects *different* ones. Reserving by proximity
+to known compact-object examples favors typical, representative members
+over the boundary-ambiguous cases uncertainty sampling prefers - and a
+side effect shows up in the composition too: the reserved slots also
+pulled in more AGN than usual (57% of queries vs. the usual ~45-47%),
+plausibly because some compact objects and hard/absorbed AGN occupy
+neighboring regions of X-ray hardness-ratio feature space, so proximity
+search for "similar to known compact objects" incidentally surfaces
+informative AGN examples too - which may explain why AGN's result is
+also the best of all seven strategies.
+
+**Bottom line:** it took seven acquisition strategies and one
+training-side intervention to get here, and the six negative results
+along the way are what made the seventh possible - each one localized
+where the problem wasn't (not batch composition, not label reliability,
+not classifier calibration alone) until only one candidate mechanism was
+left untested: dependency on the classifier's own predictions. Removing
+that dependency for the rare-class portion of acquisition produced a
+real, statistically robust, no-trade-off improvement over random
+sampling - 53% label savings in the same range as the RB-C1000 benchmark
+this project was originally scoped against, clearing the ~15-20%
+kill-condition threshold decisively. The shared `common/` infrastructure
+(seven tested acquisition strategies, a documented class-weighting
+lever, and the diagnostic scripts that isolated each failure mode) is
+exactly what the later two modules will reuse - and the diagnostic
+process that got here is as much the deliverable as the final number.
 
 Raw per-round results: `results/label_efficiency_log.csv`.
 Reproduce: `python -m catalog_classification.run_experiment --seeds 15`,

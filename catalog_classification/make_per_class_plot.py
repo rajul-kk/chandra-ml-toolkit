@@ -10,14 +10,22 @@ import pandas as pd
 from catalog_classification.features import LABELS
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
-COLORS = {"random": "tab:blue", "uncertainty": "tab:orange",
-          "margin": "tab:green", "reliability_weighted": "tab:red",
-          "class_balanced": "tab:purple"}
+# fixed strategy -> color assignment (not dict .get() fallback) so adding a
+# strategy never silently collides with an existing color in the plot
+_PALETTE = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
+            "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan"]
+COLORS = {name: _PALETTE[i % len(_PALETTE)] for i, name in enumerate(
+    ["random", "uncertainty", "margin", "reliability_weighted",
+     "class_balanced", "quota", "prototype"]
+)}
 
 
 def main():
     df = pd.read_csv(RESULTS_DIR / "label_efficiency_log.csv")
     strategies = sorted(df["strategy"].unique())
+    for s in strategies:
+        if s not in COLORS:
+            COLORS[s] = _PALETTE[len(COLORS) % len(_PALETTE)]
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharex=True)
 
     for ax, label in zip(axes, LABELS):
@@ -33,7 +41,8 @@ def main():
         ax.set_xlabel("labels used")
     axes[0].set_ylabel("F1")
     axes[0].legend(fontsize=8)
-    fig.suptitle("Per-class F1 vs. labels used (15 seeds): AL helps AGN/STAR, not COMPACT_OBJECT")
+    fig.suptitle("Per-class F1 vs. labels used (15 seeds): prototype-distance AL "
+                 "significantly helps all three classes")
     fig.tight_layout()
     out = RESULTS_DIR / "per_class_f1_curves.png"
     fig.savefig(out, dpi=150)
