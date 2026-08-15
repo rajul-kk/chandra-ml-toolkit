@@ -1,10 +1,62 @@
-# Project (queued): extend AnomalyMatch to a new archive
+# Project: extend AnomalyMatch to a new archive
 
-Status: **queued, not started.** Try after Project 1 (`catalog_classification/`)
-is fully wrapped up - it currently has one experiment still running (the
-classifier-independent `prototype_distance_score` strategy, the last untried
-acquisition idea). Don't start this in parallel; get that result and close
-Project 1 out first, per the repo's sequencing rule.
+Status: **in progress. Setup step 1 (pipeline validation) substantially done,
+with one open hardware caveat - see "Setup step 1 status" below before
+proceeding to real data.**
+
+## Setup step 1 status (2026-08-16)
+
+Installed AnomalyMatch (ESA GitHub, MIT licensed) into an isolated Python
+3.12 venv at `image_anomaly_detection/.venv` (this machine only had Python
+3.10; AnomalyMatch requires >=3.11). Vendored clone lives at
+`image_anomaly_detection/vendor/AnomalyMatch/` (gitignored - external repo
+with its own git history, not tracked here). Prepared GalaxyMNIST (10,000
+images, both 96px and 224px) via the repo's own `paper_scripts/prepare_datasets.py`.
+
+**What's confirmed working end-to-end, CPU-only, on this machine:** one
+complete active-learning cycle - session init, baseline evaluation over
+the full 10,000-image pool (~13 min), FixMatch training for 10 iterations,
+model checkpointing (`.safetensors`), prediction rescoring, and label
+correction based on results. This validates the pipeline mechanically
+works, matching the plan's Setup step 1 goal.
+
+**What doesn't work reliably: a second training cycle within the same
+process.** It crashes with a native `Windows fatal exception: access
+violation`, always at the second cycle's very first forward pass, but in
+a *different* torch CPU op each time (first `conv2d`, then `hardtanh`
+after disabling MKL-DNN) - a pattern consistent with memory corruption
+from something in the between-cycles state (model reload, optimizer/EMA
+reset, or thread-pool teardown) rather than a bug in any single op. Tried
+the standard remedies for this crash class: `num_workers=0` (ruled out
+DataLoader multiprocessing), single-threaded MKL/OpenMP (delayed the
+crash from cycle 1 to cycle 2, didn't fix it), and
+`torch.backends.mkldnn.enabled=False` (changed which op crashes, didn't
+fix it). Stopped there rather than continuing to chase CPU-specific
+workarounds - both crashing ops are CPU-kernel-specific (oneDNN CPU
+conv, CPU hardtanh); GPU execution uses an entirely different code path
+(cuDNN) and very plausibly doesn't hit this at all, consistent with the
+plan's original "i7 laptop + Colab/Kaggle GPU" hardware assumption.
+
+**Environment patches made to the vendored `paper_scripts/` (all via env
+vars with the original GPU-tuned defaults preserved, so nothing changes
+for a real GPU run):**
+- `ANOMALYMATCH_PRED_BATCH_SIZE` (default 1000) - 1000 OOM'd on this
+  machine's ~5GB free RAM; use 32 for CPU.
+- `ANOMALYMATCH_NUM_WORKERS` (default 4) - use 0 on CPU to avoid spawning
+  worker subprocesses.
+- Fixed a real bug in the vendored script unrelated to CPU/GPU: it still
+  hardcoded `.pth` checkpoint filenames from before `anomaly_match`
+  v1.3.1's migration to `.safetensors` (noted in that package's own
+  README changelog) - now uses `.safetensors` throughout.
+- TurboJPEG's native lib isn't present on this Windows machine; guarded
+  the module-level `TurboJPEG()` instantiation so it falls back to the
+  PIL decode path the script already had.
+
+**Recommendation:** proceed to Chandra CSC cutout adaptation work now
+(archive access, schema mapping, Cutana/fitsbolt normalisation for CSC's
+FITS format) - none of that needs a GPU. Defer actual FixMatch training
+runs to Colab/Kaggle GPU, consistent with the original plan, rather than
+continuing to debug this CPU-specific crash locally.
 
 ## Source method
 
