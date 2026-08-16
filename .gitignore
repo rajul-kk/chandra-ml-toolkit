@@ -13,7 +13,7 @@ data/cache/
 *.png
 !results/*.png
 !docs/**/*.png
-
+docs/
 # vendored external repo (AnomalyMatch, MIT licensed, own git history) -
 # cloned locally for image_anomaly_detection/, not tracked as part of this repo
 image_anomaly_detection/vendor/
