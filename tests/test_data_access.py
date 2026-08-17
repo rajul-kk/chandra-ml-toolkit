@@ -101,8 +101,8 @@ def test_image_cutout_downloads_matching_band_and_caches(archive, monkeypatch, t
     df = pd.DataFrame([{"name": "S1", "ra": 10.0, "dec": 20.0}])
     archive._service = FakeService(default_df=df)
     archive._sia_service = FakeSIAService([
-        {"band": "CXO_b", "accref": "http://example.test/broad.fits"},
-        {"band": "CXO_h", "accref": "http://example.test/hard.fits"},
+        {"band": "CXO_b", "accref": "http://example.test/retrieveFile?filename=broad.fits&filetype=ecorrimg"},
+        {"band": "CXO_h", "accref": "http://example.test/retrieveFile?filename=hard.fits&filetype=ecorrimg"},
     ])
 
     class FakeResponse:
@@ -120,12 +120,21 @@ def test_image_cutout_downloads_matching_band_and_caches(archive, monkeypatch, t
 
     src = archive.resolve("S1")
     path = src.image_cutout(band="broad")
+    assert path.name == "broad.fits"
     assert path.read_bytes() == b"fake-fits-bytes"
-    assert calls == ["http://example.test/broad.fits"]
+    assert len(calls) == 1
 
     # second call should hit the on-disk cache, not re-download
     src.image_cutout(band="broad")
-    assert calls == ["http://example.test/broad.fits"]
+    assert len(calls) == 1
+
+    # a *different* source sharing the same remote image should also hit
+    # the shared cache, not re-download
+    df2 = pd.DataFrame([{"name": "S2", "ra": 10.001, "dec": 20.001}])
+    archive._service = FakeService(default_df=df2)
+    src2 = archive.resolve("S2")
+    src2.image_cutout(band="broad")
+    assert len(calls) == 1
 
 
 def test_image_cutout_raises_when_band_not_found(archive):

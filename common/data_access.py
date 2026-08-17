@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from urllib.parse import parse_qs, urlparse
+
 import pandas as pd
 import pyvo
 import requests
@@ -86,9 +88,6 @@ class ChandraSource:
         right crop size and normalization depend on the downstream model.
         """
         band_code = BAND_CODES.get(band, band)
-        cache_path = self._archive._image_cache_path(self.name, band_code)
-        if cache_path.exists() and not force:
-            return cache_path
 
         ra = float(self.catalog_row["ra"])
         dec = float(self.catalog_row["dec"])
@@ -104,7 +103,16 @@ class ChandraSource:
                 f"search at ({ra}, {dec}), size={size_arcsec}arcsec"
             )
 
-        resp = requests.get(match.getdataurl(), timeout=120)
+        # Cache by the remote image's own filename, not by source name -
+        # many sources share the same observation/field, so this avoids
+        # re-downloading the same ~50-90MB full-frame image once per source.
+        url = match.getdataurl()
+        remote_filename = parse_qs(urlparse(url).query)["filename"][0]
+        cache_path = self._archive._shared_image_cache_path(remote_filename)
+        if cache_path.exists() and not force:
+            return cache_path
+
+        resp = requests.get(url, timeout=120)
         resp.raise_for_status()
         cache_path.write_bytes(resp.content)
         return cache_path
@@ -154,11 +162,10 @@ class ChandraArchive:
         d.mkdir(parents=True, exist_ok=True)
         return d / "catalog.json"
 
-    def _image_cache_path(self, name: str, band_code: str) -> Path:
-        safe = name.replace(" ", "_").replace("/", "_")
-        d = self.cache_dir / safe
+    def _shared_image_cache_path(self, remote_filename: str) -> Path:
+        d = self.cache_dir / "_images"
         d.mkdir(parents=True, exist_ok=True)
-        return d / f"cutout_{band_code}.fits"
+        return d / remote_filename
 
     def resolve(self, name: str, columns: Optional[list[str]] = None,
                 force: bool = False) -> ChandraSource:
