@@ -42,21 +42,26 @@ DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"
 BAND_CODES = {"broad": "b", "hard": "h", "medium": "m", "soft": "s", "ultrasoft": "u"}
 
 
-def _search_with_retry(service, query: str, attempts: int = 4, base_delay: float = 2.0):
-    """The public CSC TAP endpoint occasionally drops connections mid-query
-    (observed: RemoteDisconnected on large IN(...) queries). Retry with
+def _with_retry(call, attempts: int = 4, base_delay: float = 2.0):
+    """The public CSC TAP/SIA endpoints occasionally drop connections
+    mid-query (observed: RemoteDisconnected on large IN(...) TAP queries and
+    on SIA image searches alike). Retry any zero-arg callable with
     exponential backoff before giving up - this is shared plumbing other
-    projects will hit the same flakiness through.
+    projects/call sites hit the same flakiness through.
     """
     last_exc = None
     for attempt in range(attempts):
         try:
-            return service.search(query)
+            return call()
         except Exception as exc:  # pyvo wraps requests/urllib3 errors variously
             last_exc = exc
             if attempt < attempts - 1:
                 time.sleep(base_delay * (2 ** attempt))
     raise last_exc
+
+
+def _search_with_retry(service, query: str, attempts: int = 4, base_delay: float = 2.0):
+    return _with_retry(lambda: service.search(query), attempts, base_delay)
 
 
 @dataclass
@@ -92,7 +97,9 @@ class ChandraSource:
         ra = float(self.catalog_row["ra"])
         dec = float(self.catalog_row["dec"])
         search_size_deg = max(size_arcsec / 3600.0, 0.3)
-        results = self._archive.sia_service.search(pos=(ra, dec), size=search_size_deg)
+        results = _with_retry(
+            lambda: self._archive.sia_service.search(pos=(ra, dec), size=search_size_deg)
+        )
 
         match = next(
             (r for r in results if r["band"].lower() == f"cxo_{band_code}"), None
@@ -112,9 +119,12 @@ class ChandraSource:
         if cache_path.exists() and not force:
             return cache_path
 
-        resp = requests.get(url, timeout=120)
-        resp.raise_for_status()
-        cache_path.write_bytes(resp.content)
+        def _download():
+            resp = requests.get(url, timeout=120)
+            resp.raise_for_status()
+            return resp.content
+
+        cache_path.write_bytes(_with_retry(_download))
         return cache_path
 
     def event_file(self, obsid: Optional[int] = None) -> Path:

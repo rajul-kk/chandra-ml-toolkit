@@ -110,13 +110,28 @@ def build(n_extended: int, n_point: int, out_dir: Path):
     images_dir = out_dir / "images"
     images_dir.mkdir(exist_ok=True)
 
+    labels_path = out_dir / "labels_chandra.csv"
     rows = []
+    if labels_path.exists():
+        # resume: skip sources already downloaded by a prior (possibly
+        # interrupted) run of this same out_dir - the public SIA/TAP
+        # endpoints drop connections often enough on runs this long that
+        # losing all progress on one failure isn't acceptable.
+        rows = pd.read_csv(labels_path).to_dict("records")
+        done_names = {r["source_name"] for r in rows}
+        print(f"resuming: {len(rows)} already done")
+    else:
+        done_names = set()
+
     for i, row in candidates.iterrows():
         name, ra, dec, label_idx = row["name"], row["ra"], row["dec"], int(row["label_idx"])
-        src = archive.resolve(name)
+        if name in done_names:
+            continue
+
         try:
+            src = archive.resolve(name)
             fits_path = src.image_cutout(band="broad")
-        except LookupError as e:
+        except Exception as e:
             print(f"  skip {name}: {e}")
             continue
 
@@ -130,10 +145,10 @@ def build(n_extended: int, n_point: int, out_dir: Path):
         img.save(images_dir / filename, format="JPEG", quality=95)
         rows.append({"filename": filename, "label": CLASS_NAMES[label_idx],
                       "label_idx": label_idx, "split": "train", "source_name": name})
+        pd.DataFrame(rows).to_csv(labels_path, index=False)  # write after each success, not just at the end
         print(f"  [{len(rows)}/{len(candidates)}] {name} -> {filename} ({CLASS_NAMES[label_idx]})")
 
     labels_df = pd.DataFrame(rows)
-    labels_df.to_csv(out_dir / "labels_chandra.csv", index=False)
     print(f"\nSaved {len(labels_df)} cutouts to {images_dir}")
     print(f"Labels: {labels_df['label'].value_counts().to_dict()}")
 
