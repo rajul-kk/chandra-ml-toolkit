@@ -18,3 +18,4 @@ docs/
 # cloned locally for image_anomaly_detection/, not tracked as part of this repo
 image_anomaly_detection/vendor/
 image_anomaly_detection/benchmark_results/
+image_anomaly_detection/scratch_cutouts/

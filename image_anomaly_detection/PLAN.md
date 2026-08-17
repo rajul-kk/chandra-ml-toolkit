@@ -1,8 +1,73 @@
 # Project: extend AnomalyMatch to a new archive
 
-Status: **in progress. Setup step 1 (pipeline validation) substantially done,
-with one open hardware caveat - see "Setup step 1 status" below before
-proceeding to real data.**
+Status: **in progress. Setup step 1 (pipeline validation) done (see below -
+GalaxyMNIST benchmark ran end-to-end on Kaggle GPU, real but modest
+improvement trend vs. paper's headline number, as expected at this scale).
+Setup step 2 (real Chandra cutout access) done: SIA-based image download,
+WCS cropping, and a labeled seed pool of 24 real CSC cutouts are built and
+working - see "Setup step 2 status" below.**
+
+## Setup step 2 status (2026-08-18): real Chandra cutout pipeline
+
+`common/data_access.py`'s `image_cutout()` now downloads real CSC images via
+the SIA endpoint (`csc21siap/queryImages`), verified live. Two non-obvious
+findings from getting this working, worth keeping so they aren't
+re-discovered:
+
+- **SIA search radius must be decoupled from the desired cutout size.** A
+  search box matching a small requested cutout (e.g. 60 arcsec) frequently
+  finds zero images even for sources with real image products, because a
+  single ACIS CCD field of view is ~0.3deg and the SIA search box must be at
+  least that large to reliably intersect an observation's footprint. Fixed
+  with a 0.3deg search-radius floor, independent of the eventual crop size.
+- **CSC's per-observation `regimg` product ("image around source region")
+  is aperture-sized, not a fixed postage stamp** - for a point source it can
+  be as small as 5x5 pixels, useless for morphology. The full-field
+  `ecorrimg`/`img` product (the one SIA's `accref` links to directly) is the
+  right choice; crop it yourself via WCS (`astropy.nddata.Cutout2D`) around
+  the source RA/Dec instead.
+- **CSC's real per-detection file API is undocumented publicly but
+  reverse-engineerable from CIAO's `search_csc` open-source implementation**
+  (`ciao_contrib/cda/csccli.py` on GitHub): `GET
+  https://cda.cfa.harvard.edu/csccli/browse?packageset={obsid}.{obi}.{region_id}/{filetype}/{band}`
+  returns the real filename as JSON (region_id empty string for obi-level
+  products like `expmap`), which is then passed to
+  `csccli/retrieveFile?filename=...&filetype=...&version=rel2.1` to get the
+  bytes. `region_id` for a given source+obsid comes from joining
+  `csc21.master_stack_assoc` -> `csc21.stack_observation_assoc` (not a
+  simple column on `master_source`).
+- **The downloaded image has a real, non-trivial instrumental artifact**:
+  ACIS frame-transfer "streak" effects (a well-known Chandra CCD readout
+  artifact from bright/saturated sources) show up as a diagonal line across
+  the field plus sharp, few-pixel-wide negative-value spikes right next to
+  bright sources (background-subtraction over-correction at the streak).
+  Confirmed this is NOT an exposure-map/low-exposure artifact (exposure map
+  is smooth and high right through the defect) and NOT fixable by a small
+  median filter alone (the defect is multi-pixel-wide, not isolated salt
+  noise). Properly removing it needs CIAO's real streak-masking tools
+  (`acis_streak_map`), out of scope for this pyvo-based layer. Decision:
+  **accept it as representative real-world imaging noise** rather than
+  chase a full CIAO install - it appears independent of the extent_flag
+  label (visible in both extended and point-source cutouts equally), so it
+  shouldn't create a spurious shortcut for the classifier, and AnomalyMatch's
+  own paper validates against real imaging defects (cosmic rays, diffraction
+  spikes) in Hubble/JWST/Euclid data anyway.
+
+`image_anomaly_detection/build_seed_cutouts.py` builds a labeled seed pool
+from real CSC sources: `extent_flag=1` (extended) as the anomaly-candidate
+class, `extent_flag=0` (point-like) as normal - both filtered to
+`conf_flag=0 AND significance>10` to avoid marginal detections. Output
+matches `prepare_datasets.py`'s format (RGB JPEGs + labels.csv). Validated
+at n=30 requested (24 succeeded, 6 skipped where no broad-band image matched
+within the search floor - acceptable at this scale): 12 extended / 12 point,
+balanced. Each source's full-frame image is ~50-90MB and there's no
+per-source dedup for images sharing a field yet, so scaling this up is a
+real bandwidth/time decision, not just a parameter bump - worth checking in
+before jumping straight to hundreds/thousands.
+
+**Next**: either scale the seed pool up further and get it through
+AnomalyMatch on GPU (Kaggle), or treat 24 as enough for an initial
+mechanics/separability check first before investing more download time.
 
 ## Setup step 1 status (2026-08-16)
 
