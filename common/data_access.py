@@ -2,18 +2,21 @@
 
 Resolves a CSC 2.1 source to its three native data products:
 
-  (a) catalog row      - CSC 2.1 TAP query (works, used by catalog_classification)
-  (b) image cutout      - stub for the future image_anomaly_detection module
-  (c) event file        - stub for the future eventfile_representation module
+  (a) catalog row  - CSC 2.1 TAP query (used by catalog_classification)
+  (b) image        - CSC SIA query (`csc21siap/queryImages`), used by
+                      image_anomaly_detection - returns the full CCD-frame
+                      FITS image, not a cropped cutout (see image_cutout()'s
+                      docstring)
+  (c) event file    - stub for the future eventfile_representation module
 
-All three come off the same archive and the same TAP service (csc21.image
-and ivoa.ObsCore carry the cutout/event product locations), so one access
-layer with a local disk cache serves all three planned projects rather than
-each reimplementing Chandra I/O.
+(a) and (b) use different services: TAP (`csc21tap`) for catalog/metadata,
+SIA (`csc21siap/queryImages`) for images - CSC image products are not
+reachable via TAP's ObsCore `access_url` directly. One access layer with a
+local disk cache serves all three planned projects rather than each
+reimplementing Chandra I/O.
 
-Only (a) is implemented end-to-end here. (b) and (c) raise NotImplementedError
-with the query they'll need to issue, so the later modules extend this file
-instead of rewriting it.
+(c) raises NotImplementedError with the query it'll need to issue, so
+eventfile_representation extends this file instead of rewriting it.
 """
 from __future__ import annotations
 
@@ -26,9 +29,15 @@ from typing import Optional
 
 import pandas as pd
 import pyvo
+import requests
 
 TAP_URL = "http://cda.cfa.harvard.edu/csc21tap"
+SIA_URL = "http://cda.cfa.harvard.edu/csc21siap/queryImages"
 DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"
+
+# CSC image band names, as they appear (suffixed to "CXO_") in SIA search
+# results' `band` column - verified live against the SIA endpoint.
+BAND_CODES = {"broad": "b", "hard": "h", "medium": "m", "soft": "s", "ultrasoft": "u"}
 
 
 def _search_with_retry(service, query: str, attempts: int = 4, base_delay: float = 2.0):
@@ -55,20 +64,50 @@ class ChandraSource:
     catalog_row: dict
     _archive: "ChandraArchive" = field(repr=False)
 
-    def image_cutout(self, band: str = "broad", size_arcsec: float = 60.0) -> Path:
-        """Download/return a local FITS cutout path for this source.
+    def image_cutout(self, band: str = "broad", size_arcsec: float = 60.0,
+                      force: bool = False) -> Path:
+        """Download and return a local FITS image path for this source.
 
-        Not implemented yet - for image_anomaly_detection to fill in. The
-        product lives in csc21.image / ivoa.ObsCore on the same TAP service
-        this module already queries; join on `name` (or region/obsid) to
-        get the access_url, then cache it under
-        `{cache_dir}/{name}/cutout_{band}.fits` following the same
-        cache-key convention as query_adql().
+        Uses the CSC SIA endpoint (`csc21siap/queryImages`), not the TAP
+        service - CSC image products aren't fetchable via TAP's ObsCore
+        `access_url` directly, SIA's `accref` is the real download link
+        (verified live: resolves to `csccli/retrieveFile?...`).
+
+        Note this returns the *full CCD-frame image* SIA matches on
+        (typically 2048x2048px, not cropped to `size_arcsec`) - `size_arcsec`
+        is not used as the SIA search radius (verified live: a search box
+        matching a small requested cutout size often finds zero images even
+        though the source has real image products, because a single-CCD ACIS
+        field of view is ~0.3deg and the SIA search box must be at least
+        that large to reliably intersect an observation's footprint; a fixed
+        0.3deg floor is used for the search instead). Cropping to a tight
+        cutout around this source's RA/Dec is a separate step (WCS-based,
+        via astropy Cutout2D) left to the caller/build script, since the
+        right crop size and normalization depend on the downstream model.
         """
-        raise NotImplementedError(
-            "image cutout access not implemented; see docstring for the "
-            "csc21.image / ivoa.ObsCore query this should issue"
+        band_code = BAND_CODES.get(band, band)
+        cache_path = self._archive._image_cache_path(self.name, band_code)
+        if cache_path.exists() and not force:
+            return cache_path
+
+        ra = float(self.catalog_row["ra"])
+        dec = float(self.catalog_row["dec"])
+        search_size_deg = max(size_arcsec / 3600.0, 0.3)
+        results = self._archive.sia_service.search(pos=(ra, dec), size=search_size_deg)
+
+        match = next(
+            (r for r in results if r["band"].lower() == f"cxo_{band_code}"), None
         )
+        if match is None:
+            raise LookupError(
+                f"no {band!r} ({band_code}) image found for {self.name!r} via SIA "
+                f"search at ({ra}, {dec}), size={size_arcsec}arcsec"
+            )
+
+        resp = requests.get(match.getdataurl(), timeout=120)
+        resp.raise_for_status()
+        cache_path.write_bytes(resp.content)
+        return cache_path
 
     def event_file(self, obsid: Optional[int] = None) -> Path:
         """Download/return a local event-file (evt2) path for this source.
@@ -88,11 +127,14 @@ class ChandraSource:
 class ChandraArchive:
     """CSC 2.1 access with a local disk cache keyed by source id / query hash."""
 
-    def __init__(self, cache_dir: Path = DEFAULT_CACHE_DIR, tap_url: str = TAP_URL):
+    def __init__(self, cache_dir: Path = DEFAULT_CACHE_DIR, tap_url: str = TAP_URL,
+                 sia_url: str = SIA_URL):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._tap_url = tap_url
+        self._sia_url = sia_url
         self._service: Optional[pyvo.dal.TAPService] = None
+        self._sia_service: Optional[pyvo.dal.SIAService] = None
 
     @property
     def service(self) -> pyvo.dal.TAPService:
@@ -100,11 +142,23 @@ class ChandraArchive:
             self._service = pyvo.dal.TAPService(self._tap_url)
         return self._service
 
+    @property
+    def sia_service(self) -> pyvo.dal.SIAService:
+        if self._sia_service is None:
+            self._sia_service = pyvo.dal.SIAService(self._sia_url)
+        return self._sia_service
+
     def _source_cache_path(self, name: str) -> Path:
         safe = name.replace(" ", "_").replace("/", "_")
         d = self.cache_dir / safe
         d.mkdir(parents=True, exist_ok=True)
         return d / "catalog.json"
+
+    def _image_cache_path(self, name: str, band_code: str) -> Path:
+        safe = name.replace(" ", "_").replace("/", "_")
+        d = self.cache_dir / safe
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"cutout_{band_code}.fits"
 
     def resolve(self, name: str, columns: Optional[list[str]] = None,
                 force: bool = False) -> ChandraSource:

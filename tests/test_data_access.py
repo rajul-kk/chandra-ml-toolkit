@@ -71,15 +71,71 @@ def test_resolve_force_bypasses_cache(archive):
     assert len(fake.calls) == 2
 
 
-def test_image_cutout_and_event_file_are_explicit_stubs(archive):
+def test_event_file_is_an_explicit_stub(archive):
     df = pd.DataFrame([{"name": "S1", "ra": 1.0}])
     fake = FakeService(default_df=df)
     archive._service = fake
     src = archive.resolve("S1")
     with pytest.raises(NotImplementedError):
-        src.image_cutout()
-    with pytest.raises(NotImplementedError):
         src.event_file()
+
+
+class FakeSIARow(dict):
+    """Stands in for a pyvo SIA result row: dict-like `[...]` access plus
+    a getdataurl() method."""
+    def getdataurl(self):
+        return self["accref"]
+
+
+class FakeSIAService:
+    def __init__(self, rows):
+        self._rows = rows
+        self.calls = []
+
+    def search(self, pos, size):
+        self.calls.append((pos, size))
+        return [FakeSIARow(r) for r in self._rows]
+
+
+def test_image_cutout_downloads_matching_band_and_caches(archive, monkeypatch, tmp_path):
+    df = pd.DataFrame([{"name": "S1", "ra": 10.0, "dec": 20.0}])
+    archive._service = FakeService(default_df=df)
+    archive._sia_service = FakeSIAService([
+        {"band": "CXO_b", "accref": "http://example.test/broad.fits"},
+        {"band": "CXO_h", "accref": "http://example.test/hard.fits"},
+    ])
+
+    class FakeResponse:
+        content = b"fake-fits-bytes"
+        def raise_for_status(self):
+            pass
+
+    calls = []
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr("common.data_access.requests.get", fake_get)
+
+    src = archive.resolve("S1")
+    path = src.image_cutout(band="broad")
+    assert path.read_bytes() == b"fake-fits-bytes"
+    assert calls == ["http://example.test/broad.fits"]
+
+    # second call should hit the on-disk cache, not re-download
+    src.image_cutout(band="broad")
+    assert calls == ["http://example.test/broad.fits"]
+
+
+def test_image_cutout_raises_when_band_not_found(archive):
+    df = pd.DataFrame([{"name": "S1", "ra": 10.0, "dec": 20.0}])
+    archive._service = FakeService(default_df=df)
+    archive._sia_service = FakeSIAService([{"band": "CXO_h", "accref": "http://example.test/hard.fits"}])
+
+    src = archive.resolve("S1")
+    with pytest.raises(LookupError):
+        src.image_cutout(band="broad")
 
 
 def test_query_features_by_name_chunks_and_caches(archive):
