@@ -36,15 +36,25 @@ CUTOUT_SIZE_ARCSEC = 90.0  # ~1.5 arcmin - a few times a typical PSF, room for e
 IMG_SIZE = 224
 
 
+# Downloaded ecorrimg cutouts have a native pixel scale of ~0.49 arcsec/px
+# (measured live). A validation run found 50%+ of extent_flag=1 sources had
+# major_axis_b below this - a statistically significant extent per CSC's own
+# fit, but literally sub-pixel and invisible in the image we feed the model.
+# That's not a data-volume problem no amount of training fixes; filter to
+# sources with a real chance of being visually resolvable instead.
+MIN_EXTENT_ARCSEC = 1.0  # ~2 native pixels
+
+
 def query_candidates(archive: ChandraArchive, n_extended: int, n_point: int) -> pd.DataFrame:
     """Pull real CSC sources by extent_flag, filtered to decent-quality
     detections (avoid marginal significance/confused-field sources that
     would just add label noise to a first validation pass)."""
     q_extended = f"""
-        SELECT TOP {n_extended} name, ra, dec, significance, flux_aper_b, extent_flag
+        SELECT TOP {n_extended} name, ra, dec, significance, flux_aper_b, extent_flag, major_axis_b
         FROM csc21.master_source
         WHERE extent_flag=1 AND conf_flag=0 AND significance > 10
-        ORDER BY significance DESC
+              AND major_axis_b > {MIN_EXTENT_ARCSEC}
+        ORDER BY major_axis_b DESC
     """
     q_point = f"""
         SELECT TOP {n_point} name, ra, dec, significance, flux_aper_b, extent_flag
@@ -52,7 +62,7 @@ def query_candidates(archive: ChandraArchive, n_extended: int, n_point: int) -> 
         WHERE extent_flag=0 AND conf_flag=0 AND significance > 10
         ORDER BY significance DESC
     """
-    extended = archive.query_adql(q_extended, cache_key=f"seed_extended_{n_extended}")
+    extended = archive.query_adql(q_extended, cache_key=f"seed_extended_v2_minext{MIN_EXTENT_ARCSEC}_{n_extended}")
     point = archive.query_adql(q_point, cache_key=f"seed_point_{n_point}")
     extended["label_idx"] = 1
     point["label_idx"] = 0

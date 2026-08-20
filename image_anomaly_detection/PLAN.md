@@ -1,11 +1,64 @@
 # Project: extend AnomalyMatch to a new archive
 
-Status: **in progress. Setup step 1 (pipeline validation) done (see below -
-GalaxyMNIST benchmark ran end-to-end on Kaggle GPU, real but modest
-improvement trend vs. paper's headline number, as expected at this scale).
-Setup step 2 (real Chandra cutout access) done: SIA-based image download,
-WCS cropping, and a labeled seed pool of 24 real CSC cutouts are built and
-working - see "Setup step 2 status" below.**
+Status: **in progress. Setup step 1 (pipeline validation) done. Setup step 2
+(real Chandra cutout access) done. Setup step 3 (first real benchmark run)
+done and produced a genuine negative/chance-level result with a diagnosed
+cause and an applied fix, not yet re-verified - see "Setup step 3" below
+before treating this as resolved.**
+
+## Setup step 3 status (2026-08-20): first real benchmark run - chance-level result, diagnosed
+
+Ran `anomalymatch_chandra_kaggle.ipynb` on Kaggle (T4 x2) against the 474-cutout
+pool (36 extended / 438 point, unfiltered `extent_flag`). Pipeline ran
+end-to-end without crashing (after fixing a real bug - see below) and
+produced a **chance-level result**: `final_auroc=0.498`, `baseline_auroc=0.445`
+(worse than random pre-training), `improvement_auprc=-0.023` (AUPRC got
+*worse* across training cycles). Top-1% precision (25%) looked closer to the
+GalaxyMNIST reference (29.3%) but is not meaningful at this pool size (~4-5
+images in the top-1% bucket - one lucky/unlucky hit swings it ~20 points).
+Reported to the user as an honest negative finding, not reframed around the
+one favorable-looking number, per this project's own stated discipline.
+
+**Notebook bug found and fixed along the way**: `anomaly_match`'s own
+dataset loader (`AnomalyDetectionDataset`) scans `cfg.data_dir` as a plain
+folder of loose image files (`get_image_names_from_folder`) - it does NOT
+read the HDF5 for that count. GalaxyMNIST's own prep script writes both a
+loose-file folder (`save_images_to_folder`) and the HDF5
+(`create_hdf5_file`); the Chandra notebook's data-packing cell only wrote
+the HDF5, so `anomaly_match` found "0 total images" despite a correctly-built
+474-image HDF5. Fixed by also copying the built JPEGs into `data_dir`.
+
+**Diagnosed root cause of the chance-level result**: cross-checked
+`major_axis_b` (CSC's fitted angular size) against the images' native pixel
+scale (~0.49 arcsec/px, measured live) for the actual 474-source pool used.
+**50% of the `extent_flag=1` ("anomaly") sources had `major_axis_b` below one
+native pixel** - a statistically significant extent per CSC's own fitting
+algorithm, but literally sub-pixel and invisible in the rendered image.
+Median `major_axis_b` was 0.42" (extended) vs 0.27" (point) - a real but tiny
+difference, well below what's resolvable at this cutout's pixel scale. This
+is not a data-volume or seed-count problem (more training cycles can't teach
+a classifier to see a size difference that isn't in the pixels) - it's a
+proxy-label quality problem.
+
+**Applied fix**: added `MIN_EXTENT_ARCSEC = 1.0` (~2 native pixels) filter to
+`build_seed_cutouts.py`'s extended-source query, ordered by `major_axis_b
+DESC` (largest/most visually resolvable extended sources first, not just
+most statistically significant). Rebuilt pool (`seed_pool_v4`): 458 cutouts
+(438 point / 20 extended - fewer extended sources survived the stricter
+filter + image-availability check). A quick manual visual check of a few
+examples was inconclusive (one extended cutout was mostly swamped by the
+streak artifact, another didn't look obviously larger than a point-source
+example) - **not re-verified on Kaggle yet**. Since the notebook imports
+`build_seed_cutouts.py` directly rather than duplicating its logic, this fix
+applies automatically on the next notebook run, no notebook changes needed.
+
+**Open question for the next run**: does AUROC actually move off ~0.5 with
+the filtered pool? If not, the streak artifact or per-image adaptive
+normalization (each cutout independently percentile-stretched to its own
+min/max, which may partly erase absolute-size information a size-invariant
+stretch would preserve) becomes the next suspect - not yet investigated.
+
+## Setup step 1/2 summary
 
 ## Setup step 2 status (2026-08-18): real Chandra cutout pipeline
 
