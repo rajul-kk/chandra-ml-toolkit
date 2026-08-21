@@ -44,17 +44,56 @@ IMG_SIZE = 224
 # sources with a real chance of being visually resolvable instead.
 MIN_EXTENT_ARCSEC = 1.0  # ~2 native pixels
 
+# A validation run's initial 4-example anomaly seed turned out to be 3
+# images of the same dense stellar cluster field (many blended point
+# sources, not real diffuse structure - extent_flag there almost certainly
+# reflects source confusion, not genuine large-scale morphology). With only
+# ~20 extended sources total and a 4-example seed, one crowded field can
+# dominate the model's entire initial anomaly signal. Enforce a minimum
+# separation between selected extended sources so a single cluster can't
+# supply multiple "different" examples that are really the same field.
+MIN_SEPARATION_ARCMIN = 5.0
+
+
+def _dedup_by_separation(df: pd.DataFrame, n: int, min_sep_arcmin: float) -> pd.DataFrame:
+    """Greedily keep rows (in existing order - caller sorts first) that are
+    at least min_sep_arcmin from every already-kept row, up to n rows."""
+    kept_ra, kept_dec = [], []
+    keep_idx = []
+    for idx, row in df.iterrows():
+        ra, dec = row["ra"], row["dec"]
+        too_close = any(
+            ((ra - kra) * np.cos(np.radians(dec))) ** 2 + (dec - kdec) ** 2
+            < (min_sep_arcmin / 60.0) ** 2
+            for kra, kdec in zip(kept_ra, kept_dec)
+        )
+        if not too_close:
+            keep_idx.append(idx)
+            kept_ra.append(ra)
+            kept_dec.append(dec)
+        if len(keep_idx) >= n:
+            break
+    return df.loc[keep_idx]
+
 
 def query_candidates(archive: ChandraArchive, n_extended: int, n_point: int) -> pd.DataFrame:
     """Pull real CSC sources by extent_flag, filtered to decent-quality
     detections (avoid marginal significance/confused-field sources that
     would just add label noise to a first validation pass)."""
+    # Over-fetch extended candidates, then shuffle before spatial dedup.
+    # Ordering by major_axis_b DESC (tried first) concentrates almost
+    # entirely on a handful of famous, physically clustered extended
+    # regions (Carina, LMC, ...) - after 5arcmin dedup, a 600-row fetch
+    # collapsed to just 4 independent sources. A large fetch + random
+    # shuffle (fixed seed for reproducibility) spreads the sample across
+    # the sky instead of concentrating on the same few crowded fields.
+    fetch_n = max(n_extended * 60, 2000)
     q_extended = f"""
-        SELECT TOP {n_extended} name, ra, dec, significance, flux_aper_b, extent_flag, major_axis_b
+        SELECT TOP {fetch_n} name, ra, dec, significance, flux_aper_b, extent_flag, major_axis_b
         FROM csc21.master_source
         WHERE extent_flag=1 AND conf_flag=0 AND significance > 10
               AND major_axis_b > {MIN_EXTENT_ARCSEC}
-        ORDER BY major_axis_b DESC
+        ORDER BY significance DESC
     """
     q_point = f"""
         SELECT TOP {n_point} name, ra, dec, significance, flux_aper_b, extent_flag
@@ -62,7 +101,9 @@ def query_candidates(archive: ChandraArchive, n_extended: int, n_point: int) -> 
         WHERE extent_flag=0 AND conf_flag=0 AND significance > 10
         ORDER BY significance DESC
     """
-    extended = archive.query_adql(q_extended, cache_key=f"seed_extended_v2_minext{MIN_EXTENT_ARCSEC}_{n_extended}")
+    extended_raw = archive.query_adql(q_extended, cache_key=f"seed_extended_v3_minext{MIN_EXTENT_ARCSEC}_{fetch_n}")
+    extended_shuffled = extended_raw.sample(frac=1, random_state=0).reset_index(drop=True)
+    extended = _dedup_by_separation(extended_shuffled, n_extended, MIN_SEPARATION_ARCMIN)
     point = archive.query_adql(q_point, cache_key=f"seed_point_{n_point}")
     extended["label_idx"] = 1
     point["label_idx"] = 0

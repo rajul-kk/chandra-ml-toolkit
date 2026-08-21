@@ -58,6 +58,42 @@ normalization (each cutout independently percentile-stretched to its own
 min/max, which may partly erase absolute-size information a size-invariant
 stretch would preserve) becomes the next suspect - not yet investigated.
 
+## Setup step 3 continued (2026-08-21): second real run - strong but inverted signal, second cause found
+
+The `seed_pool_v4` re-run (major_axis_b>1.0" filter) produced `final_auroc=0.182`
+- **not** chance-level, a *strong, systematically inverted* signal (flip it:
+AUROC~0.82). `top-1% precision=0%` confirms a real ranking, just backwards.
+Confirmed via the run's own logs this was not an indexing bug (class counts,
+seed composition all matched expectations exactly).
+
+**Second root cause found**: inspected the actual 4 initial anomaly-seed
+images (`create_initial_labeled_data`'s `random_state=0` sample is
+reproducible locally against the same `labels_chandra.csv`). **3 of the 4
+were the same dense stellar cluster field** (Carina-region coordinates,
+~arcmin apart) - a "starfield" of many blended point sources, not a genuine
+diffuse blob. `extent_flag=1` there almost certainly reflects source
+confusion (CSC's detector can't cleanly separate close point sources), not
+real large-scale morphology. With only 20 extended sources total and a
+4-example seed, one crowded field dominated the model's entire initial
+anomaly signal - a different, narrower visual pattern than the diversity of
+what actually got labeled `extent_flag=1` elsewhere in the pool, which
+plausibly explains the inversion (model learned one field's texture, which
+doesn't generalize and may anti-correlate with the rest of the class).
+
+**Applied fix**: `MIN_SEPARATION_ARCMIN=5.0` greedy spatial dedup on
+extended candidates (`_dedup_by_separation`) so a single crowded field can't
+supply multiple "different" examples. First attempt combined this with the
+existing `ORDER BY major_axis_b DESC` and collapsed to only **4 unique
+extended sources in the entire 600-row fetch** - large/rare extended
+structures cluster hard in a few famous regions (Carina, LMC, ...), so
+sorting by size before deduping just finds the same few regions repeatedly.
+Fixed by fetching a much larger candidate set (`TOP 2000`, `ORDER BY
+significance DESC` instead of size) and shuffling (`random_state=0`) before
+the spatial dedup, so the sample spreads across genuinely different sky
+regions rather than concentrating on rare giant structures. Rebuilt
+(`seed_pool_v6`): 471 cutouts (438 point / 33 extended), all distinct
+fields/sources this time. **Not yet re-verified on Kaggle.**
+
 ## Setup step 1/2 summary
 
 ## Setup step 2 status (2026-08-18): real Chandra cutout pipeline
