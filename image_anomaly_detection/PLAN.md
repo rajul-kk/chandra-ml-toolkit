@@ -6,7 +6,43 @@ CSC cutouts (final_auroc=0.715, exceeding the GalaxyMNIST validation
 reference of 0.627), after two rounds of diagnosing and fixing real
 proxy-label problems. This is a pipeline/methods-transfer validation result,
 not a discovery claim - see "Setup step 3, third run" below for the full
-picture and honest caveats before treating this as more than that.**
+picture and honest caveats before treating this as more than that.
+Explicitly scoped and not yet started: a "discovery mode" phase to try for
+something more scientifically profound than proxy-label validation -
+see "Setup step 4 (planned)" at the bottom of this file.**
+
+## RESULT (2026-08-22): AnomalyMatch transfers to Chandra X-ray imaging
+
+**Headline number**: `final_auroc = 0.715` on real CSC 2.1 image cutouts,
+`extent_flag` (extended vs. point-like) as the anomaly/normal split,
+471-image pool (33 extended / 438 point), 20-example seed, 2 active-learning
+cycles. Monotonic improvement across the run: `baseline_auroc=0.370` (below
+chance pre-training) -> `first_iter_auroc=0.628` -> `final_auroc=0.715`.
+`final_auprc=0.245` against a 7% base rate (33/471) is ~3.5x base rate - the
+most statistically robust number here. Top-0.1%/top-1% precision (100%/75%)
+are directionally excellent but thin at this pool size (~1 and ~4-5 images
+in those buckets) - don't over-read them.
+
+**Why this took three attempts, briefly** (full detail in "Setup step 3"
+below): run 1 was chance-level (`final_auroc=0.498`) because `extent_flag`
+included many sources with sub-pixel measured extent - a real statistical
+property CSC's own fitting algorithm found, but invisible in the rendered
+image, so no amount of training could teach the model to see it. Run 2, after
+filtering to `major_axis_b>1.0"`, was a *strong but inverted* signal
+(`final_auroc=0.182`, i.e. ~0.82 flipped) because 3 of the 4 initial anomaly
+seed examples turned out to be the same dense stellar cluster field (source
+confusion, not real diffuse structure) dominating the model's whole anomaly
+signal. Run 3, after adding spatial dedup so one crowded field can't supply
+multiple seed examples, produced the result above.
+
+**What this establishes**: AnomalyMatch's FixMatch + active-learning
+approach is not just mechanically portable to Chandra X-ray data (Setup
+step 1-2 already showed that) - it can find a real, non-trivial visual
+signal on this data product, the first time this method has been applied to
+Chandra/X-ray imaging at all. **What this does NOT establish**: any specific
+astrophysical discovery. `extent_flag` is a real catalog property, but the
+model is only shown to recover a signal already known to CSC's own pipeline
+- see "Setup step 4" below for the more profound next step this opens up.
 
 ## Setup step 3 status (2026-08-20): first real benchmark run - chance-level result, diagnosed
 
@@ -352,3 +388,44 @@ similar rare-anomaly cold-start problem, that diagnostic playbook
 acquisition signal depends on the model at all) transfers directly -
 see `catalog_classification`'s README and the `chandra-toolkit-project1-finding`
 memory for the full chain.
+
+## Setup step 4 (planned, not started): discovery mode
+
+The RESULT above validates that the method works (`extent_flag` is
+re-derivable from images alone) but isn't scientifically profound - CSC's
+own pipeline already computed `extent_flag`, so the model isn't telling
+anyone anything new. The more profound next step, matching how
+AnomalyMatch's own paper actually used this method on Hubble/JWST/Euclid
+(surfacing specific candidate sources, not just a validation metric):
+
+1. **Seed set**: use the same kind of small, verified "known-interesting"
+   examples rather than a catalog-flag proxy - e.g. a handful of CSC
+   sources cross-matched to literature-known extended objects (SNRs,
+   cluster/group X-ray emission, resolved jets) via SIMBAD/NED, not just
+   `extent_flag=1`. `build_seed_cutouts.py`'s `major_axis_b`/spatial-dedup
+   logic still applies for building this seed set cleanly.
+2. **Unlabeled pool**: scale up substantially from the current ~470 - to
+   thousands of CSC sources spanning a broad significance/flux range, not
+   deduped-for-diversity the way the labeled seed was (the model should see
+   the full messy diversity of real point-like sources here, not a curated
+   sample). This is the actual bandwidth cost driver - real per-field
+   downloads, dedup by shared field helps but doesn't eliminate it (see
+   Setup step 2's dedup notes).
+3. **More active-learning cycles**: 3-5 rather than 2, closer to what the
+   paper itself used, since each cycle's manual correction step is where
+   real signal gets injected.
+4. **Manual vetting step (the actual point of this phase)**: for the final
+   model's top-N highest-scoring *previously unlabeled* candidates (not
+   sources already known to be extended), inspect the image and query
+   SIMBAD/NED by position. A candidate that (a) isn't already catalogued as
+   extended/unusual, and (b) doesn't look like a streak/chip-gap artifact
+   or crowded-field confusion on inspection, is the actual finding this
+   phase is chasing.
+5. **Honest kill condition**: if none of the top candidates survive step 4
+   as genuinely novel (all are either known objects or artifacts), that's a
+   legitimate negative result to report as such - same discipline as every
+   other finding in this project - not a failure of the pipeline, which the
+   RESULT above already validates works.
+
+Not started - scoped here so it isn't re-derived from scratch when picked
+up.
