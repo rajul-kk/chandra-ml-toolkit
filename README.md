@@ -6,7 +6,7 @@ data products, sharing one data-access and active-learning foundation:
 | Module | Data product | Status |
 |---|---|---|
 | [`catalog_classification/`](catalog_classification/) | catalog features (CSC 2.1) | active |
-| `image_anomaly_detection/` | image cutouts (AnomalyMatch-based) | planned |
+| [`image_anomaly_detection/`](image_anomaly_detection/) | image cutouts (AnomalyMatch-based) | active - first positive result reached, see its `PLAN.md` |
 | `eventfile_representation/` | raw event files (representation learning) | planned |
 
 The shared modules in [`common/`](common/) are built generally from day one
