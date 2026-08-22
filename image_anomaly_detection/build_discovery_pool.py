@@ -104,16 +104,94 @@ def build_verified_seed_candidates(n_per_otype: int = 150) -> pd.DataFrame:
     return result
 
 
+def query_unlabeled_pool(archive: ChandraArchive, n_point: int) -> pd.DataFrame:
+    """A much larger, undeduped pool of point-like sources for the model to
+    explore during discovery mode. Deliberately NOT spatially deduped like
+    the seed set above - the point here is the model seeing the real,
+    messy diversity of sources (including ones that happen to share a
+    crowded field), not a curated sample. label_idx is 0 for everything
+    since none of these are known to be anomalous; the model's own scores
+    are what matter, not a ground-truth split.
+    """
+    q = f"""
+        SELECT TOP {n_point} name, ra, dec, significance, flux_aper_b, extent_flag
+        FROM csc21.master_source
+        WHERE conf_flag=0 AND significance > 10
+        ORDER BY significance DESC
+    """
+    pool = archive.query_adql(q, cache_key=f"discovery_unlabeled_{n_point}")
+    pool["label_idx"] = 0
+    return pool
+
+
+def build_unlabeled_pool(n_point: int, out_dir: Path):
+    """Download and crop the unlabeled discovery pool, same resumable
+    pattern as build_seed_cutouts.build() (the public SIA/TAP endpoints
+    drop connections often enough on runs this long that losing all
+    progress on one failure isn't acceptable).
+    """
+    from image_anomaly_detection.build_seed_cutouts import make_cutout_image
+
+    archive = ChandraArchive()
+    candidates = query_unlabeled_pool(archive, n_point)
+    print(f"{len(candidates)} unlabeled candidate sources")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = out_dir / "images"
+    images_dir.mkdir(exist_ok=True)
+
+    labels_path = out_dir / "labels_unlabeled.csv"
+    rows = []
+    if labels_path.exists():
+        rows = pd.read_csv(labels_path).to_dict("records")
+        done_names = {r["source_name"] for r in rows}
+        print(f"resuming: {len(rows)} already done")
+    else:
+        done_names = set()
+
+    for i, row in candidates.iterrows():
+        name, ra, dec = row["name"], row["ra"], row["dec"]
+        if name in done_names:
+            continue
+        try:
+            src = archive.resolve(name)
+            fits_path = src.image_cutout(band="broad")
+        except Exception as e:
+            print(f"  skip {name}: {e}")
+            continue
+        try:
+            img = make_cutout_image(fits_path, ra, dec)
+        except Exception as e:
+            print(f"  skip {name} (crop failed): {e}")
+            continue
+
+        filename = f"discovery_{i:06d}.jpeg"
+        img.save(images_dir / filename, format="JPEG", quality=95)
+        rows.append({"filename": filename, "label": "unlabeled", "label_idx": 0,
+                      "split": "train", "source_name": name})
+        pd.DataFrame(rows).to_csv(labels_path, index=False)
+        if len(rows) % 25 == 0:
+            print(f"  [{len(rows)}/{len(candidates)}] downloaded")
+
+    print(f"\nSaved {len(rows)} unlabeled cutouts to {images_dir}")
+
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
+    p.add_argument("--mode", choices=["seed", "unlabeled"], default="seed")
     p.add_argument("--n_per_otype", type=int, default=150)
+    p.add_argument("--n_point", type=int, default=3000)
     p.add_argument("--out_csv", type=str, default="scratch_cutouts/verified_seed_candidates.csv")
+    p.add_argument("--out_dir", type=str, default="scratch_cutouts/discovery_pool")
     args = p.parse_args()
 
-    candidates = build_verified_seed_candidates(args.n_per_otype)
-    out_path = Path(args.out_csv)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    candidates.to_csv(out_path, index=False)
-    print(f"\n{len(candidates)} unique verified seed candidates saved to {out_path}")
-    print(candidates[["simbad_name", "simbad_otype", "name", "major_axis_b"]].to_string())
+    if args.mode == "seed":
+        candidates = build_verified_seed_candidates(args.n_per_otype)
+        out_path = Path(args.out_csv)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        candidates.to_csv(out_path, index=False)
+        print(f"\n{len(candidates)} unique verified seed candidates saved to {out_path}")
+        print(candidates[["simbad_name", "simbad_otype", "name", "major_axis_b"]].to_string())
+    else:
+        build_unlabeled_pool(args.n_point, Path(args.out_dir))
