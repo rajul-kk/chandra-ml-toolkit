@@ -27,7 +27,9 @@ import pyvo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from common.data_access import ChandraArchive, _with_retry  # noqa: E402
-from image_anomaly_detection.build_seed_cutouts import MIN_EXTENT_ARCSEC  # noqa: E402
+from image_anomaly_detection.build_seed_cutouts import (  # noqa: E402
+    MIN_EXTENT_ARCSEC, MIN_SEPARATION_ARCMIN, _dedup_by_separation,
+)
 
 SIMBAD_URL = "http://simbad.cds.unistra.fr/simbad/sim-tap"
 CROSSMATCH_RADIUS_ARCSEC = 60.0
@@ -90,6 +92,15 @@ def build_verified_seed_candidates(n_per_otype: int = 150) -> pd.DataFrame:
         print(f"  {len(matched)} verified extended matches from {len(simbad_df)} '{otype}' positions")
         frames.append(matched)
     result = pd.concat(frames, ignore_index=True).drop_duplicates(subset="name")
+
+    # A single literature object (one SNR/cluster) can match several nearby
+    # CSC detections (its emission spans multiple detected regions) - same
+    # crowded-field risk already diagnosed in setup step 3 (3 of 4 seed
+    # examples turning out to be one dense field, which caused an inverted
+    # AUROC). Reuse the same spatial dedup so the final seed set spans
+    # genuinely distinct objects, not one object counted several times.
+    result = result.sort_values("major_axis_b", ascending=False).reset_index(drop=True)
+    result = _dedup_by_separation(result, n=len(result), min_sep_arcmin=MIN_SEPARATION_ARCMIN)
     return result
 
 
