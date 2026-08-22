@@ -1,10 +1,12 @@
 # Project: extend AnomalyMatch to a new archive
 
-Status: **in progress. Setup step 1 (pipeline validation) done. Setup step 2
-(real Chandra cutout access) done. Setup step 3 (first real benchmark run)
-done and produced a genuine negative/chance-level result with a diagnosed
-cause and an applied fix, not yet re-verified - see "Setup step 3" below
-before treating this as resolved.**
+Status: **first genuine positive result reached (2026-08-22): AnomalyMatch
+shows a real, monotonically-improving discrimination signal on real Chandra
+CSC cutouts (final_auroc=0.715, exceeding the GalaxyMNIST validation
+reference of 0.627), after two rounds of diagnosing and fixing real
+proxy-label problems. This is a pipeline/methods-transfer validation result,
+not a discovery claim - see "Setup step 3, third run" below for the full
+picture and honest caveats before treating this as more than that.**
 
 ## Setup step 3 status (2026-08-20): first real benchmark run - chance-level result, diagnosed
 
@@ -92,7 +94,48 @@ significance DESC` instead of size) and shuffling (`random_state=0`) before
 the spatial dedup, so the sample spreads across genuinely different sky
 regions rather than concentrating on rare giant structures. Rebuilt
 (`seed_pool_v6`): 471 cutouts (438 point / 33 extended), all distinct
-fields/sources this time. **Not yet re-verified on Kaggle.**
+fields/sources this time.
+
+**Notebook bug also found this round**: `!pip install -q . pyvo astropy scipy`
+in one command silently failed to install `pyvo` (combining the local `.`
+package with unrelated pip packages let the resolver drop one silently, `-q`
+hid the evidence) - `ModuleNotFoundError` surfaced three cells later at an
+unrelated import site. Fixed by splitting into separate `pip install`
+calls plus a fail-fast `import pyvo` right after, so a future failure here
+is immediately obvious instead of confusing.
+
+## Setup step 3, third run (2026-08-22): first genuine positive result
+
+`seed_pool_v6` (spatially-deduped, size-filtered extended sources) through
+the same 2-cycle benchmark protocol produced a **real, monotonically
+improving signal**: `baseline_auroc=0.370` (below chance pre-training) ->
+`first_iter_auroc=0.628` -> `final_auroc=0.715`. This **exceeds the
+GalaxyMNIST validation run's `final_auroc=0.627`**, despite a ~20x smaller
+pool (471 vs 10,000) - real evidence the FixMatch+active-learning approach
+transfers to Chandra X-ray imaging, not just "doesn't crash."
+`final_auprc=0.245` against a 7% base rate (33/471 extended) is ~3.5x base
+rate, the most robust number here. Top-0.1%/top-1% precision (100%/75%) are
+directionally excellent but statistically thin at this pool size (~1 and
+~4-5 images in those buckets respectively - a couple of lucky/unlucky hits
+would swing them substantially); `final_auprc` is the number to trust more.
+
+**Caveats, still real**: `extent_flag` remains a proxy label (real measured
+catalog property, not vetted anomaly ground truth), and the ACIS streak
+artifact (see Setup step 2) is still present and accepted, not removed.
+This is a pipeline/methods-transfer validation result - genuinely the first
+positive evidence AnomalyMatch works on Chandra data, but not yet a
+discovery claim about any specific source.
+
+**Next steps, in order**: (1) scale the pool further now that the pipeline
+and label-quality fixes are validated - more extended examples would make
+the top-N precision numbers statistically solid rather than thin; (2) cross-
+check the model's genuinely highest-scoring candidates (not just the
+labeled extended sources) against SIMBAD/NED before any novelty claim, per
+this project's own kill-condition discipline; (3) consider whether the
+streak artifact or per-image adaptive normalization concerns (raised after
+the second run) are still worth investigating now that a real signal exists
+to potentially improve further, or whether that's diminishing-returns territory
+given the pipeline validation goal is already met.
 
 ## Setup step 1/2 summary
 
