@@ -170,6 +170,16 @@ def build_unlabeled_pool(n_point: int, out_dir: Path):
         rows.append({"filename": filename, "label": "unlabeled", "label_idx": 0,
                       "split": "train", "source_name": name})
         pd.DataFrame(rows).to_csv(labels_path, index=False)
+
+        # At this pool's composition, unique-field reuse is close to 1:1
+        # (confirmed live: 340 downloaded sources needed 325 unique field
+        # downloads, 22GB, and would have needed ~190GB to reach 3000 -
+        # more than the free disk space available). The shared cache exists
+        # to avoid re-downloading a field another source also needs, but
+        # that benefit doesn't materialize here, so delete the raw FITS
+        # right after cropping instead of letting it accumulate forever.
+        fits_path.unlink(missing_ok=True)
+
         if len(rows) % 25 == 0:
             print(f"  [{len(rows)}/{len(candidates)}] downloaded")
 
